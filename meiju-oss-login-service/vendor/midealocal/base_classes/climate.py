@@ -1,0 +1,324 @@
+"""Shared climate classes for Midea devices."""
+
+from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
+from enum import IntEnum, StrEnum
+from typing import final
+
+from midealocal.device import MideaDevice
+
+# Fallback target temperature bounds for devices that do not report their own.
+DEFAULT_MIN_TARGET_TEMPERATURE = 16.0
+DEFAULT_MAX_TARGET_TEMPERATURE = 30.0
+TEMPERATURE_STEP_WHOLE = 1.0
+TEMPERATURE_STEP_HALF = 0.5
+
+
+class MideaPreset(StrEnum):
+    """Preset mode names, merged across all climate devices (ac, cc, fb)."""
+
+    NONE = "none"
+    AUTO = "auto"
+    COMFORT = "comfort"
+    ECO = "eco"
+    BOOST = "boost"
+    SLEEP = "sleep"
+    AWAY = "away"
+    ANTI_FREEZING = "anti_freezing"
+    CONSTANT_TEMPERATURE = "constant_temperature"
+    NORMAL = "normal"
+    FAST_HEATING = "fast_heating"
+    STANDBY = "standby"
+
+
+class MideaHVACMode(IntEnum):
+    """Midea HVAC Mode."""
+
+
+class MideaFanMode(IntEnum):
+    """Midea Fan Mode."""
+
+
+class MideaSwingMode(StrEnum):
+    """Midea Swing Mode."""
+
+
+class MideaClimateDevice(MideaDevice, ABC):
+    """Base class for climate-capable Midea devices (ac, cc, cf, c3, fb).
+
+    The mandatory members below have no sensible default and must be
+    overridden. Capabilities a given device doesn't support (fan speed,
+    swing, a configurable temperature step) keep this class's defaults,
+    which report the capability as unsupported rather than raising for a
+    routine read.
+    """
+
+    _is_filter_reset_supported: bool = False
+
+    @property
+    def _preset_attributes(self) -> Mapping[MideaPreset, str]:
+        """Flag-style presets: {generic preset name: boolean device attribute}.
+
+        Devices with named string presets (fb) override the three methods
+        below instead of this mapping.
+        """
+        return {}
+
+    @property
+    def is_filter_reset_supported(self) -> bool:
+        """Return True if the device supports filter reset, else False."""
+        return self._is_filter_reset_supported
+
+    @property
+    @abstractmethod
+    def hvac_modes(self) -> set[MideaHVACMode]:
+        """Return the supported HVAC modes."""
+
+    @property
+    @final
+    def raw_hvac_modes(self) -> Sequence[str]:
+        """Return the generic HVAC mode names, in protocol-index order."""
+        return [mode.name.lower() for mode in sorted(self.hvac_modes)]
+
+    @abstractmethod
+    def hvac_mode(self, zone: int | None = None) -> MideaHVACMode | None:
+        """Return the current HVAC mode name, or None if unknown.
+
+        Takes a zone like set_target_temperature: ignored by every device
+        except C3, where zone is the only way to know which zone's power
+        attribute to read (its mode is shared across zones, but power isn't).
+        """
+
+    @final
+    def raw_hvac_mode(self, zone: int | None = None) -> str | None:
+        """Return the current HVAC mode name, or None if unknown.
+
+        Takes a zone like set_target_temperature: ignored by every device
+        except C3, where zone is the only way to know which zone's power
+        attribute to read (its mode is shared across zones, but power isn't).
+        """
+        hvac_mode = self.hvac_mode(zone=zone)
+        return hvac_mode.name.lower() if hvac_mode is not None else None
+
+    @abstractmethod
+    def set_hvac_mode(
+        self,
+        hvac_mode: MideaHVACMode,
+        zone: int | None = None,
+    ) -> None:
+        """Set the HVAC mode by name. See hvac_mode for the zone parameter."""
+
+    def _str_to_hvac(self, hvac_name: str | None) -> MideaHVACMode | None:
+        """Get the correct MideaHVACMode based on name."""
+        if hvac_name is None:
+            return None
+        for mode in self.hvac_modes:
+            if mode.name.lower() == hvac_name:
+                return mode
+        return None
+
+    @final
+    def set_raw_hvac_mode(self, hvac_mode: str, zone: int | None = None) -> None:
+        """Set the HVAC mode by name. See hvac_mode for the zone parameter."""
+        hvac = self._str_to_hvac(hvac_mode)
+        if hvac is not None:
+            return self.set_hvac_mode(hvac_mode=hvac, zone=zone)
+        raise ValueError("Unsupported hvac mode")
+
+    @abstractmethod
+    def set_target_temperature(
+        self,
+        target_temperature: float,
+        hvac_mode: MideaHVACMode | None,
+        zone: int | None = None,
+    ) -> None:
+        """Set the target temperature, optionally also changing HVAC mode."""
+
+    @final
+    def set_raw_target_temperature(
+        self,
+        target_temperature: float,
+        hvac_mode: str | None,
+        zone: int | None = None,
+    ) -> None:
+        """Set the target temperature, optionally also changing HVAC mode."""
+        self.set_target_temperature(
+            target_temperature=target_temperature,
+            hvac_mode=self._str_to_hvac(hvac_mode),
+            zone=zone,
+        )
+
+    @abstractmethod
+    def target_temperature(self, zone: int | None = None) -> float | None:
+        """Return the current target temperature, or None if unknown.
+
+        Takes a zone like set_target_temperature: ignored by every device
+        except C3, whose two zones have independent target temperatures.
+        """
+
+    @abstractmethod
+    def current_temperature(self) -> float | None:
+        """Return the current temperature, or None if unknown."""
+
+    @abstractmethod
+    def current_humidity(self) -> float | None:
+        """Return the current humidity, or None if unknown."""
+
+    @abstractmethod
+    def turn_on(self, zone: int | None = None) -> None:
+        """Turn the device on. See set_target_temperature for the zone parameter."""
+
+    @abstractmethod
+    def turn_off(self, zone: int | None = None) -> None:
+        """Turn the device off. See set_target_temperature for the zone parameter."""
+
+    def reset_filter(self) -> None:
+        """Reset filter timer."""
+
+    def min_temperature(self, zone: int | None = None) -> float:  # noqa: ARG002
+        """Return the minimum settable target temperature.
+
+        Takes a zone like set_target_temperature: ignored by every device
+        except C3, whose two zones have independent temperature ranges.
+        """
+        return DEFAULT_MIN_TARGET_TEMPERATURE
+
+    def max_temperature(self, zone: int | None = None) -> float:  # noqa: ARG002
+        """Return the maximum settable target temperature. See min_temperature."""
+        return DEFAULT_MAX_TARGET_TEMPERATURE
+
+    @property
+    def fan_modes(self) -> Sequence[MideaFanMode]:
+        """Return the available fan modes."""
+        return []
+
+    @property
+    @final
+    def raw_fan_modes(self) -> Sequence[str]:
+        """Return the available fan modes."""
+        return [fan_mode.name.lower() for fan_mode in sorted(self.fan_modes)]
+
+    @property
+    def fan_mode(self) -> MideaFanMode | None:
+        """Return the current fan mode, or None if unknown."""
+        return None
+
+    @property
+    @final
+    def raw_fan_mode(self) -> str | None:
+        """Return the current fan mode, or None if unknown."""
+        return self.fan_mode.name.lower() if self.fan_mode is not None else None
+
+    def _str_to_fan_mode(self, fan_mode: str) -> MideaFanMode | None:
+        """Get the correct MideaFanMode based on name."""
+        for mode in self.fan_modes:
+            if mode.name.lower() == fan_mode:
+                return mode
+        return None
+
+    def set_fan_mode(self, fan_mode: MideaFanMode) -> None:
+        """Set the device fan mode."""
+        msg = "Fan mode is not supported by this device"
+        raise NotImplementedError(msg)
+
+    @final
+    def set_raw_fan_mode(self, fan_mode: str) -> None:
+        """Set the fan mode by name."""
+        mode = self._str_to_fan_mode(fan_mode)
+        if mode is None:
+            raise ValueError("Unsupported fan mode")
+        self.set_fan_mode(mode)
+
+    @property
+    def swing_modes(self) -> Sequence[MideaSwingMode]:
+        """Return the available MideaSwingMode."""
+        return []
+
+    @property
+    @final
+    def raw_swing_modes(self) -> Sequence[str]:
+        """Return the available swing modes."""
+        return self.swing_modes
+
+    @property
+    def swing_mode(self) -> MideaSwingMode | None:
+        """Return the current swing mode, or None if unknown."""
+        return None
+
+    @property
+    @final
+    def raw_swing_mode(self) -> str | None:
+        """Return the current swing mode, or None if unknown."""
+        return self.swing_mode
+
+    def _str_to_swing_mode(self, swing_mode: str) -> MideaSwingMode | None:
+        """Get the correct MideaFanMode based on name."""
+        for mode in self.swing_modes:
+            if mode == swing_mode:
+                return mode
+        return None
+
+    def set_swing_mode(self, swing_mode: MideaSwingMode) -> None:
+        """Set the swing mode."""
+        msg = "Swing mode is not supported by this device"
+        raise NotImplementedError(msg)
+
+    @final
+    def set_raw_swing_mode(self, swing_mode: str) -> None:
+        """Set the swing mode by name."""
+        mode = self._str_to_swing_mode(swing_mode)
+        if mode is None:
+            raise ValueError("Unsupported swing mode")
+        self.set_swing_mode(mode)
+
+    @property
+    def temperature_step(self) -> float:
+        """Return the target temperature step."""
+        return TEMPERATURE_STEP_WHOLE
+
+    @property
+    def preset_modes(self) -> Sequence[MideaPreset]:
+        """Return the available preset mode names, or [] if unsupported."""
+        if not self._preset_attributes:
+            return []
+        return [MideaPreset.NONE, *self._preset_attributes]
+
+    @property
+    def preset_mode(self) -> MideaPreset | None:
+        """Return the current preset mode name, or None if unsupported."""
+        if not self._preset_attributes:
+            return None
+        for name, attr in self._preset_attributes.items():
+            if self.get_attribute(attr):
+                return name
+        return MideaPreset.NONE
+
+    def set_preset_mode(self, preset_mode: str) -> None:
+        """Activate a preset by name (clearing the previous one)."""
+        if not self._preset_attributes:
+            msg = "Preset mode is not supported by this device"
+            raise NotImplementedError(msg)
+        try:
+            requested = MideaPreset(preset_mode)
+        except ValueError:
+            msg = f"Unsupported preset mode: {preset_mode}"
+            raise ValueError(msg) from None
+        if (attr := self._preset_attributes.get(requested)) is not None:
+            self.set_attribute(attr=attr, value=True)
+            # set_attribute() only builds/sends the wire command; it doesn't
+            # update self._attributes, so an immediate follow-up read (or an
+            # immediate set_preset_mode(NONE)) would still see the old flags
+            # until the device's next status response.
+            for other_attr in self._preset_attributes.values():
+                self._attributes[other_attr] = other_attr == attr
+            return
+        if requested != MideaPreset.NONE:
+            msg = f"Unsupported preset mode: {preset_mode}"
+            raise ValueError(msg)
+        # Clear every active flag, not just the one preset_mode() would
+        # report: if device state ever has more than one flag active at
+        # once, clearing only the first-found one would leave the rest on.
+        for old_attr in self._preset_attributes.values():
+            if self.get_attribute(old_attr):
+                self.set_attribute(attr=old_attr, value=False)
+                self._attributes[old_attr] = False

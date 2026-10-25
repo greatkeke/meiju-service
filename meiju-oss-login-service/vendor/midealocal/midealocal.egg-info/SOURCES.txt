@@ -1,0 +1,6 @@
+pyproject.toml
+midealocal.egg-info/PKG-INFO
+midealocal.egg-info/SOURCES.txt
+midealocal.egg-info/dependency_links.txt
+midealocal.egg-info/requires.txt
+midealocal.egg-info/top_level.txt

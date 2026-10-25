@@ -1,0 +1,23 @@
+[project]
+name = "midealocal"
+version = "0.0.0"
+description = "Vendored copy of midea-lan/midea-local (MIT) used by meiju-oss-login-service"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp",
+    "aiofiles",
+    "anyio",
+    "colorlog",
+    "defusedxml",
+    "ifaddr",
+    "pycryptodome",
+    "platformdirs",
+    "typing_extensions>=4.16.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["midealocal*"]

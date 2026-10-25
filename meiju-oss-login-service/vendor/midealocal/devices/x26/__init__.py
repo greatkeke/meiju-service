@@ -1,0 +1,162 @@
+"""Midea local x26 device."""
+
+import logging
+import math
+from enum import StrEnum
+from typing import Any, ClassVar, Unpack
+
+from midealocal.const import DeviceType
+from midealocal.device import MideaDevice, MideaDeviceInitKwargs, list_translator
+
+from .message import Message26Response, MessageQuery, MessageSet
+
+_LOGGER = logging.getLogger(__name__)
+
+DIRECTION_MIN_VALUE = 60
+DIRECTION_MAX_VALUE = 120
+
+
+class DeviceAttributes(StrEnum):
+    """Midea x26 device attributes."""
+
+    main_light = "main_light"
+    night_light = "night_light"
+    mode = "mode"
+    direction = "direction"
+    current_humidity = "current_humidity"
+    current_radar = "current_radar"
+    current_temperature = "current_temperature"
+
+
+class Midea26Device(MideaDevice):
+    """Midea x26 device."""
+
+    _modes: ClassVar[list[str]] = [
+        "off",
+        "heat_high",
+        "heat_low",
+        "bath",
+        "blow",
+        "ventilation",
+        "dry",
+    ]
+    _directions: ClassVar[list[str]] = [
+        "60",
+        "70",
+        "80",
+        "90",
+        "100",
+        "110",
+        "120",
+        "oscillate",
+    ]
+
+    def __init__(
+        self,
+        *,
+        customize: str,  # noqa: ARG002
+        **kwargs: Unpack[MideaDeviceInitKwargs],
+    ) -> None:
+        """Initialize Midea x26 device."""
+        super().__init__(
+            device_type=DeviceType.X26,
+            **kwargs,
+            attributes={
+                DeviceAttributes.main_light: False,
+                DeviceAttributes.night_light: False,
+                DeviceAttributes.mode: None,
+                DeviceAttributes.direction: None,
+                DeviceAttributes.current_humidity: None,
+                DeviceAttributes.current_radar: None,
+                DeviceAttributes.current_temperature: None,
+            },
+        )
+        self._fields: dict[str, Any] = {}
+
+    @staticmethod
+    def _convert_to_midea_direction(direction: str) -> int:
+        if direction == "oscillate":
+            result = 0xFD
+        else:
+            result = (
+                Midea26Device._directions.index(direction) * 10 + 60
+                if direction in Midea26Device._directions
+                else 0xFD
+            )
+        return result
+
+    @staticmethod
+    def _convert_from_midea_direction(direction: int) -> int:
+        if direction > DIRECTION_MAX_VALUE or direction < DIRECTION_MIN_VALUE:
+            result = 7
+        else:
+            result = math.floor((direction - 60 + 5) / 10)
+        return result
+
+    @property
+    def preset_modes(self) -> list[str]:
+        """Midea x26 device preset modes."""
+        return Midea26Device._modes
+
+    @property
+    def directions(self) -> list[str]:
+        """Midea x26 device directions."""
+        return Midea26Device._directions
+
+    def build_query(self) -> list[MessageQuery]:
+        """Midea x26 device build query."""
+        return [MessageQuery(self._message_protocol_version)]
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Midea x26 device process message."""
+        message = Message26Response(msg)
+        _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        # Message26Response only populates `.fields` for body_type 0x01;
+        # for any other body type, keep the last known fields instead of
+        # raising AttributeError.
+        self._fields = getattr(message, "fields", self._fields)
+        return self.update_attributes_from_message(
+            message,
+            {
+                DeviceAttributes.mode: Midea26Device._modes.__getitem__,
+                DeviceAttributes.direction: list_translator(
+                    Midea26Device._directions,
+                    key=Midea26Device._convert_from_midea_direction,
+                ),
+            },
+        )
+
+    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Midea x26 device set attribute."""
+        if attr in [
+            DeviceAttributes.main_light,
+            DeviceAttributes.night_light,
+            DeviceAttributes.mode,
+            DeviceAttributes.direction,
+        ]:
+            message = MessageSet(self._message_protocol_version)
+            message.fields = self._fields
+            message.main_light = self._attributes[DeviceAttributes.main_light]
+            message.night_light = self._attributes[DeviceAttributes.night_light]
+            current_mode = self._attributes[DeviceAttributes.mode]
+            message.mode = (
+                Midea26Device._modes.index(current_mode)
+                if current_mode in Midea26Device._modes
+                else 0
+            )
+            message.direction = self._convert_to_midea_direction(
+                self._attributes[DeviceAttributes.direction],
+            )
+            if attr in [DeviceAttributes.main_light, DeviceAttributes.night_light]:
+                message.main_light = False
+                message.night_light = False
+                setattr(message, str(attr), value)
+            elif attr == DeviceAttributes.mode:
+                message.mode = Midea26Device._modes.index(str(value))
+            elif attr == DeviceAttributes.direction:
+                message.direction = self._convert_to_midea_direction(str(value))
+            self.build_send(message)
+
+
+class MideaAppliance(Midea26Device):
+    """Midea x26 appliance."""

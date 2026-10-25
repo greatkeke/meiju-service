@@ -1,0 +1,167 @@
+"""Midea local x40 device."""
+
+import json
+import logging
+import math
+from enum import StrEnum
+from typing import Any, ClassVar, Unpack
+
+from midealocal.const import DeviceType
+from midealocal.device import (
+    MideaDevice,
+    MideaDeviceInitKwargs,
+    list_translator,
+    precision_halves_translator,
+)
+
+from .message import MessageQuery, MessageSet, MessageX40Response
+
+_LOGGER = logging.getLogger(__name__)
+
+DIRECTION_MIN_VALUE = 60
+DIRECTION_MAX_VALUE = 100
+VENTILATION_FAN_SPEED = 2
+
+
+class DeviceAttributes(StrEnum):
+    """Midea x40 device attributes."""
+
+    light = "light"
+    fan_speed = "fan_speed"
+    direction = "direction"
+    ventilation = "ventilation"
+    smelly_sensor = "smelly_sensor"
+    current_temperature = "current_temperature"
+
+
+class MideaX40Device(MideaDevice):
+    """Midea x40 Device."""
+
+    _directions: ClassVar[list[str]] = ["60", "70", "80", "90", "100", "oscillate"]
+
+    def __init__(
+        self,
+        *,
+        customize: str,
+        **kwargs: Unpack[MideaDeviceInitKwargs],
+    ) -> None:
+        """Initialize Midea x40 Device."""
+        super().__init__(
+            device_type=DeviceType.X40,
+            **kwargs,
+            attributes={
+                DeviceAttributes.light: False,
+                DeviceAttributes.fan_speed: 0,
+                DeviceAttributes.direction: False,
+                DeviceAttributes.ventilation: False,
+                DeviceAttributes.smelly_sensor: False,
+                DeviceAttributes.current_temperature: None,
+            },
+        )
+        self._fields: dict[str, Any] = {}
+        self._precision_halves: bool | None = None
+        self._default_precision_halves = False
+        self.set_customize(customize)
+
+    @property
+    def precision_halves(self) -> bool | None:
+        """Midea 40 device precision halves."""
+        return self._precision_halves
+
+    @property
+    def speed_count(self) -> int:
+        """Midea x40 device speed count."""
+        return 2
+
+    @property
+    def preset_modes(self) -> list[str]:
+        """Midea x40 device preset modes."""
+        # X40 has no "mode" attribute, so it has no named presets.
+        return []
+
+    @property
+    def directions(self) -> list[str]:
+        """Midea x40 device directions."""
+        return self._directions
+
+    def _convert_to_midea_direction(self, direction: str) -> int:
+        if direction == "oscillate" or direction not in self._directions:
+            return 0xFD
+
+        return self._directions.index(direction) * 10 + 60
+
+    @staticmethod
+    def _convert_from_midea_direction(direction: int) -> int:
+        if direction > DIRECTION_MAX_VALUE or direction < DIRECTION_MIN_VALUE:
+            result = 5
+        else:
+            result = math.floor((direction - 60 + 5) / 10)
+        return result
+
+    def build_query(self) -> list[MessageQuery]:
+        """Midea x40 Device build query."""
+        return [MessageQuery(self._message_protocol_version)]
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Midea x40 Device process message."""
+        message = MessageX40Response(msg)
+        _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        self._fields = message.fields
+        return self.update_attributes_from_message(
+            message,
+            {
+                DeviceAttributes.current_temperature: precision_halves_translator(
+                    self._precision_halves,
+                ),
+                DeviceAttributes.direction: list_translator(
+                    self._directions,
+                    key=self._convert_from_midea_direction,
+                ),
+            },
+        )
+
+    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Midea x40 Device set attribute."""
+        if attr in [
+            DeviceAttributes.light,
+            DeviceAttributes.fan_speed,
+            DeviceAttributes.direction,
+            DeviceAttributes.ventilation,
+            DeviceAttributes.smelly_sensor,
+        ]:
+            message = MessageSet(self._message_protocol_version)
+            message.fields = self._fields
+            message.light = self._attributes[DeviceAttributes.light]
+            message.ventilation = self._attributes[DeviceAttributes.ventilation]
+            message.smelly_sensor = self._attributes[DeviceAttributes.smelly_sensor]
+            message.fan_speed = self._attributes[DeviceAttributes.fan_speed]
+            message.direction = self._convert_to_midea_direction(
+                self._attributes[DeviceAttributes.direction],
+            )
+            if attr == DeviceAttributes.direction:
+                message.direction = self._convert_to_midea_direction(str(value))
+            elif (
+                attr == DeviceAttributes.ventilation
+                and message.fan_speed == VENTILATION_FAN_SPEED
+            ):
+                message.fan_speed = 1
+                message.ventilation = bool(value)
+            else:
+                setattr(message, str(attr), value)
+            self.build_send(message)
+
+    def set_customize(self, customize: str) -> None:
+        """Midea 40 device set customize."""
+        self._precision_halves = self._default_precision_halves
+        if customize and len(customize) > 0:
+            try:
+                params = json.loads(customize)
+                if params and "precision_halves" in params:
+                    self._precision_halves = params.get("precision_halves")
+            except Exception:
+                _LOGGER.exception("[%s] Set customize error", self.device_id)
+            self.update_all({"precision_halves": self._precision_halves})
+
+
+class MideaAppliance(MideaX40Device):
+    """Midea x40 appliance."""

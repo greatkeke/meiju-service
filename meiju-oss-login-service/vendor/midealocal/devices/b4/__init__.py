@@ -1,0 +1,78 @@
+"""Midea local B4 device."""
+
+import logging
+from enum import StrEnum
+from typing import Any, ClassVar, Unpack
+
+from midealocal.const import DeviceType
+from midealocal.device import MideaDevice, MideaDeviceInitKwargs
+
+from .message import MessageB4Response, MessageQuery
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class DeviceAttributes(StrEnum):
+    """Midea local B4 device attributes."""
+
+    door = "door"
+    status = "status"
+    time_remaining = "time_remaining"
+    current_temperature = "current_temperature"
+    tank_ejected = "tank_ejected"
+    water_change_reminder = "water_change_reminder"
+    water_shortage = "water_shortage"
+
+
+class MideaB4Device(MideaDevice):
+    """Midea B4 device."""
+
+    _status: ClassVar[dict[int, str]] = {
+        0x01: "standby",
+        0x02: "idle",
+        0x03: "working",
+        0x04: "finished",
+        0x05: "delay",
+        0x06: "paused",
+    }
+
+    def __init__(
+        self,
+        *,
+        customize: str,  # noqa: ARG002
+        **kwargs: Unpack[MideaDeviceInitKwargs],
+    ) -> None:
+        """Initialize Midea B4 device."""
+        super().__init__(
+            device_type=DeviceType.B4,
+            **kwargs,
+            attributes={
+                DeviceAttributes.door: False,
+                DeviceAttributes.status: None,
+                DeviceAttributes.time_remaining: None,
+                DeviceAttributes.current_temperature: None,
+                DeviceAttributes.tank_ejected: False,
+                DeviceAttributes.water_change_reminder: False,
+                DeviceAttributes.water_shortage: False,
+            },
+        )
+
+    def build_query(self) -> list[MessageQuery]:
+        """Midea B4 device build query."""
+        return [MessageQuery(self._message_protocol_version)]
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Midea B4 device process message."""
+        message = MessageB4Response(msg)
+        _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        return self.update_attributes_from_message(
+            message,
+            {DeviceAttributes.status: MideaB4Device._status.get},
+        )
+
+    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Midea B4 device set attribute."""
+
+
+class MideaAppliance(MideaB4Device):
+    """Midea B4 appliance."""

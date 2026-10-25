@@ -1,0 +1,539 @@
+"""Midea local CA message."""
+
+from enum import IntEnum, StrEnum
+from typing import Any, Literal
+
+from midealocal.const import CA_MODEL_GRY540XFS, DeviceType
+from midealocal.message import (
+    BodyParser,
+    BoolParser,
+    IntEnumParser,
+    IntParser,
+    ListTypes,
+    MessageBody,
+    MessageRequest,
+    MessageResponse,
+    MessageType,
+)
+
+MIN_CA_GENERAL_BODY_LENGTH = 24
+MIN_CA_EXCEPTION_BODY_LENGTH = 8
+CA_GENERAL_BODY_LENGTH1 = 25
+CA_GENERAL_BODY_LENGTH2 = 30
+CA_GENERAL_BODY_LENGTH3 = 31
+TEMP_POS_LOWER_VALUE = 1
+TEMP_POS_UPPER_VALUE = 29
+TEMP_NEG_LOWER_VALUE = 49
+TEMP_NEG_UPPER_VALUE = 54
+
+
+class DeviceAttributes(StrEnum):
+    """Midea CA device attributes."""
+
+    mode = "mode"
+    energy_consumption = "energy_consumption"
+    refrigerator_actual_temp = "refrigerator_actual_temp"
+    freezer_actual_temp = "freezer_actual_temp"
+    flex_zone_actual_temp = "flex_zone_actual_temp"
+    right_flex_zone_actual_temp = "right_flex_zone_actual_temp"
+    refrigerator_setting_temp = "refrigerator_setting_temp"
+    freezer_setting_temp = "freezer_setting_temp"
+    flex_zone_setting_temp = "flex_zone_setting_temp"
+    right_flex_zone_setting_temp = "right_flex_zone_setting_temp"
+    refrigerator_door_overtime = "refrigerator_door_overtime"
+    freezer_door_overtime = "freezer_door_overtime"
+    bar_door_overtime = "bar_door_overtime"
+    flex_zone_door_overtime = "flex_zone_door_overtime"
+    refrigerator_door = "refrigerator_door"
+    freezer_door = "freezer_door"
+    bar_door = "bar_door"
+    flex_zone_door = "flex_zone_door"
+    microcrystal_fresh = "microcrystal_fresh"
+    electronic_smell = "electronic_smell"
+    humidity = "humidity"
+    variable_mode = "variable_mode"
+    ice_mode = "ice_mode"
+    ice_status = "ice_status"
+    ice_door = "ice_door"
+
+
+class DeviceMode(IntEnum):
+    """Device CA Mode."""
+
+    NORMAL = 0x00
+    QUICK_FREEZING = 0x01
+    VEGETABLES = 0x02
+    VEGETABLES_DRYING = 0x03
+    CHILLED = 0x04
+    THAWING = 0x05
+    ROUGH_HEAT_REMOVAL = 0x06
+    COOL_COOKING = 0x07
+    TIMER = 0x08
+    FROZEN_RICE = 0x09
+
+
+class IceMakingMode(IntEnum):
+    """Ice making mode."""
+
+    NORMAL = 0x00
+    QUICK = 0x01
+    OFF = 0x02
+
+
+class IceMakingStatus(IntEnum):
+    """Ice making status."""
+
+    RUNNING = 0x00
+    WATER_SHORTAGE = 0x10
+    ICE_FULL = 0x20
+    STOP = 0x30
+
+
+class MessageCABase(MessageRequest):
+    """CA message base."""
+
+    def __init__(
+        self,
+        protocol_version: int,
+        message_type: MessageType,
+        body_type: ListTypes,
+        header_type: Literal[ListTypes.AA, ListTypes.X55] = ListTypes.AA,
+    ) -> None:
+        """Initialize CA message base."""
+        super().__init__(
+            device_type=DeviceType.CA,
+            protocol_version=protocol_version,
+            message_type=message_type,
+            body_type=body_type,
+            header_type=header_type,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        raise NotImplementedError
+
+
+class MessageQuery(MessageCABase):
+    """CA message query."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize CA message query."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X00,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray([])
+
+
+class MessageQueryToshiba(MessageCABase):
+    """CA message query for Toshiba devices."""
+
+    def __init__(
+        self,
+        protocol_version: int,
+    ) -> None:
+        """Initialize CA message query for Toshiba devices."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X00,
+            header_type=ListTypes.X55,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray([])
+
+
+class CAGeneralToshibaMessageBody(MessageBody):
+    """CA message general Toshiba body."""
+
+    def __init__(
+        self,
+        body: bytearray,
+        model: str,
+        message_type: MessageType = MessageType.query,
+    ) -> None:
+        """Initialize CA message general body."""
+        super().__init__(
+            body=body,
+            parser_list=self._generate_parser_list(model, message_type),
+        )
+
+    def _generate_parser_list(
+        self,
+        model: str,
+        message_type: MessageType = MessageType.query,
+    ) -> list[BodyParser[Any]]:
+        """Generate parser list based on model."""
+        initial_offset = 0
+        bool_offset = 0
+        if model == CA_MODEL_GRY540XFS:
+            initial_offset = 2
+            bool_offset = 3
+
+        parsers: list[BodyParser[Any]] = [
+            IntEnumParser(DeviceAttributes.mode, 2 + initial_offset, DeviceMode),
+            IntParser(DeviceAttributes.refrigerator_actual_temp, 3 + initial_offset),
+            IntParser(DeviceAttributes.freezer_actual_temp, 4 + initial_offset),
+            IntEnumParser(
+                DeviceAttributes.ice_mode,
+                5 + initial_offset,
+                IceMakingMode,
+                byte_mask=0x0F,
+            ),
+            IntEnumParser(
+                DeviceAttributes.ice_status,
+                5 + initial_offset,
+                IceMakingStatus,
+                byte_mask=0xF0,
+            ),
+            BoolParser(DeviceAttributes.refrigerator_door, 8 + bool_offset, 0),
+            BoolParser(DeviceAttributes.freezer_door, 8 + bool_offset, 1),
+            BoolParser(DeviceAttributes.ice_door, 8 + bool_offset, 2),
+            BoolParser(DeviceAttributes.flex_zone_door, 8 + bool_offset, 3),
+        ]
+        # The energy is only valid in query responses, where it is the energy used
+        # over the last 24 hours (Wh, refreshed hourly). Pushed status frames
+        # (notify) carry a stale value in the same bytes, so leave the attribute
+        # untouched for them; the next query refreshes it.
+        if message_type == MessageType.query:
+            parsers.append(
+                IntParser(
+                    DeviceAttributes.energy_consumption,
+                    11 + bool_offset,
+                    length_in_bytes=2,
+                ),
+            )
+        return parsers
+
+
+class CAGeneralMessageBody(MessageBody):
+    """CA message general body."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize CA message general body."""
+        super().__init__(body)
+
+        self.code_mode = (self.read_byte(body, 1) & 0x01) > 0
+        self.freezing_mode = (self.read_byte(body, 1) & 0x02) > 0
+        self.smart_mode = (self.read_byte(body, 1) & 0x04) > 0
+        self.energy_saving_mode = (self.read_byte(body, 1) & 0x08) > 0
+        self.holiday_mode = (self.read_byte(body, 1) & 0x10) > 0
+        self.moisturize_mode = (self.read_byte(body, 1) & 0x20) > 0
+        self.preservation_mode = (self.read_byte(body, 1) & 0x40) > 0
+        self.acmeFreezing_mode = (self.read_byte(body, 1) & 0x80) > 0
+        # refrigerationTemperature
+        self.refrigerator_setting_temp = self.read_byte(body, 2) & 0x0F
+        # freezingTemperature
+        self.freezer_setting_temp = -12 - ((self.read_byte(body, 2) & 0xF0) >> 4)
+        # lVariableTemperature
+        flex_zone_setting_temp = self.read_byte(body, 3)
+        # rVariableTemperature
+        right_flex_zone_setting_temp = self.read_byte(body, 4)
+
+        if TEMP_POS_LOWER_VALUE <= flex_zone_setting_temp <= TEMP_POS_UPPER_VALUE:
+            self.flex_zone_setting_temp = flex_zone_setting_temp - 19
+        elif TEMP_NEG_LOWER_VALUE <= flex_zone_setting_temp <= TEMP_NEG_UPPER_VALUE:
+            self.flex_zone_setting_temp = 30 - flex_zone_setting_temp
+        else:
+            self.flex_zone_setting_temp = 0
+        if TEMP_POS_LOWER_VALUE <= right_flex_zone_setting_temp <= TEMP_POS_UPPER_VALUE:
+            self.right_flex_zone_setting_temp = right_flex_zone_setting_temp - 19
+        elif (
+            TEMP_NEG_LOWER_VALUE <= right_flex_zone_setting_temp <= TEMP_NEG_UPPER_VALUE
+        ):
+            self.right_flex_zone_setting_temp = 30 - right_flex_zone_setting_temp
+        else:
+            self.right_flex_zone_setting_temp = 0
+
+        self.variable_mode = self.read_byte(body, 5)  # variableModeValue
+        # *powerValue 0x00 is on, 0x04/0x08/0x10/20 is off
+        self.refrigeration_power = (
+            self.read_byte(body, 6) & 0x01
+        ) < 1  # refrigerationPowerValue
+        self.l_variable_power = (
+            self.read_byte(body, 6) & 0x04
+        ) < 1  # lVariablePowerValue
+        self.r_variable_power = (
+            self.read_byte(body, 6) & 0x08
+        ) < 1  # rVariablePowerValue
+        self.freezing_power = (self.read_byte(body, 6) & 0x10) < 1  # freezingPowerValue
+        self.cross_peak_electricity_enter = (
+            self.read_byte(body, 6) & 0x20
+        )  # crossPeakElectricityEnter
+        self.cross_peak_electricity = (
+            self.read_byte(body, 6) & 0x40
+        ) > 0  # crossPeakElectricity
+        self.all_refrigeration_power = (
+            self.read_byte(body, 6) & 0x80
+        ) > 0  # allRefrigerationPower
+        self.remove_dew = self.read_byte(body, 7) & 0x01  # removeDew
+        self.humidify = self.read_byte(body, 7) & 0x02  # humidify
+        self.unfreeze = self.read_byte(body, 7) & 0x04  # unfreeze
+        # 0x08 fahrenheit, 0x00 celsius
+        self.temperature_unit = self.read_byte(body, 7) & 0x08  # temperatureUnit
+        self.flood_light = self.read_byte(body, 7) & 0x10  # floodlight
+        # functionSwitch for icea_bar_function_switch
+        self.function_switch = self.read_byte(body, 7) & 0xC0  # functionSwitch
+        self.radar_mode = self.read_byte(body, 8) & 0x01  # radarMode
+        self.milk_mode = self.read_byte(body, 8) & 0x02  # milkMode
+        self.iced_mode = self.read_byte(body, 8) & 0x04  # icedMode
+        self.plasma_aseptic_mode = self.read_byte(body, 8) & 0x08  # plasmaAsepticMode
+        self.acquire_icea_mode = self.read_byte(body, 8) & 0x10  # acquireIceaMode
+        self.brash_icea_mode = self.read_byte(body, 8) & 0x20  # brashIceaMode
+        self.acquire_water_mode = self.read_byte(body, 8) & 0x40  # acquireWaterMode
+        self.freezing_ice_machine_power = (
+            self.read_byte(body, 8) & 0x80
+        )  # freezingIceMachinePower
+        self.freezing_fahrenheit = self.read_byte(body, 9)  # freezingFahrenheit
+        self.refrigeration_fahrenheit = (
+            self.read_byte(body, 10) & 0xFC
+        )  # refrigerationFahrenheit
+        self.leach_expire_day = self.read_byte(body, 11)  # leachExpireDay
+
+        # powerConsumptionLow & powerConsumptionHigh
+        self.energy_consumption = (self.read_byte(body, 13) << 8) + self.read_byte(
+            body,
+            12,
+        )
+
+        self.freezing_motor_reset_status = (
+            self.read_byte(body, 14) & 0x01
+        )  # freezingMotorResetStatus
+        self.freezing_motor_deicing_status = (
+            self.read_byte(body, 14) & 0x02
+        )  # freezingMotorDeicingStatus
+        self.freezing_ice_machine_water_status = (
+            self.read_byte(body, 14) & 0x04
+        )  # freezingIceMachineWaterStatus
+        self.freezing_all_ice_status = (
+            self.read_byte(body, 14) & 0x08
+        )  # freezingAllIceStatus
+        self.human_induction = self.read_byte(body, 14) & 0x10  # humanInduction
+        self.refrigeration_door_power = (
+            self.read_byte(body, 15) & 0x01
+        )  # refrigerationDoorPower
+        self.freezing_door_power = self.read_byte(body, 15) & 0x02  # freezingDoorPower
+        self.variable_door_power = self.read_byte(body, 15) & 0x10  # variableDoorPower
+        self.storage_iceHome_door_state = (
+            self.read_byte(body, 15) & 0x20
+        )  # storageIceHomeDoorState
+        self.bar_door_power = self.read_byte(body, 15) & 0x04  # barDoorPower
+        self.ice_mouth_power = self.read_byte(body, 15) & 0x08  # iceMouthPower
+        self.is_error = self.read_byte(body, 16) & 0x01  # isError
+        self.interval_room_humidity_level = (
+            self.read_byte(body, 16) & 0xFE
+        )  # intervalRoomHumidityLevel
+
+        # refrigerationRealTemperature
+        self.refrigerator_actual_temp = (self.read_byte(body, 17) - 100) / 2
+        # freezingRealTemperature
+        self.freezer_actual_temp = (self.read_byte(body, 18) - 100) / 2
+        # lVariableRealTemperature
+        self.flex_zone_actual_temp = (self.read_byte(body, 19) - 100) / 2
+        # rVariableRealTemperature
+        self.right_flex_zone_actual_temp = (self.read_byte(body, 20) - 100) / 2
+
+        # fastColdMinuteLow & fastColdMinuteHigh
+        self.fast_cold_minute = (self.read_byte(body, 22) << 8) + self.read_byte(
+            body,
+            21,
+        )
+        # fastFreezeMinuteLow & fastFreezeMinuteHigh
+        self.fast_freeze_minute = (self.read_byte(body, 24) << 8) + self.read_byte(
+            body,
+            23,
+        )
+
+        if len(body) > CA_GENERAL_BODY_LENGTH1:
+            self.microcrystal_fresh = (body[27] & 0x01) > 0
+            self.dry_zone = (body[27] & 0x02) > 0
+            self.electronic_smell = (body[27] & 0x04) > 0
+            self.humidity = body[27] & 0x70
+            self.normal_temperature_level = body[28]
+            self.function_zone_level = body[29]
+
+        if len(body) > CA_GENERAL_BODY_LENGTH2:
+            self.humidity_setting = body[30] & 0x7F
+            self.smart_humidity = body[30] & 0x80
+
+        if len(body) > CA_GENERAL_BODY_LENGTH3:
+            self.storage_left_door_auto = body[31] & 0x03
+            self.storage_right_door_auto = body[31] & 0x0C
+            self.freezer_door_auto = body[31] & 0x30
+            self.freezer_door_auto_control = body[31] & 0x40
+            self.storage_door_auto_control = body[31] & 0x80
+
+
+class CAExceptionMessageBody(MessageBody):
+    """CA message exception body."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize CA message exception body."""
+        super().__init__(body)
+
+        self.refrigerator_door_overtime = (body[1] & 0x01) > 0
+        self.freezer_door_overtime = (body[1] & 0x02) > 0
+        self.bar_door_overtime = (body[1] & 0x04) > 0
+        self.flex_zone_door_overtime = (body[1] & 0x08) > 0
+
+        self.ice_miachine_full = body[1] & 0x10
+        self.refrigeration_sensor_error = body[2] & 0x01
+        self.refrigeration_deforsting_sensor_error = body[2] & 0x02
+        self.ring_temperature_sensor_error = body[2] & 0x04
+        self.flex_zone_sensor_error = body[2] & 0x08
+        self.right_flex_zone_sensor_error = body[2] & 0x10
+        self.freezing_high_temperature = body[2] & 0x20
+        self.freezing_sensor_error = body[2] & 0x40
+        self.freezing_defrosting_sensor_error = body[2] & 0x80
+        self.ice_electrical_machinery_error = body[3] & 0x01
+        self.refrigeration_defrosting_overtime = body[3] & 0x02
+        self.freezing_defrosting_overtime = body[3] & 0x04
+        self.zeroCrossingCheckError = body[3] & 0x08
+        self.eepromReadWriteError = (body[3] & 0x10) > 0
+        self.leftFlexzoneSensorError = (body[3] & 0x20) > 0
+        self.iceRoomSensorError = (body[3] & 0x40) > 0
+        self.mainDisplayCorrespondError = (body[3] & 0x80) > 0
+        self.iceMachineTemperatureError = (body[4] & 0x01) > 0
+        self.flexzoneDefrostingSensorError = (body[4] & 0x02) > 0
+        self.flexzoneDefrostingSensor2Error = (body[4] & 0x04) > 0
+        self.yogurtMachineSensorError = (body[4] & 0x08) > 0
+        self.iceMachineFrettingSwitchError = (body[4] & 0x10) > 0
+        self.iceMachinePipeFilterOvertime = (body[4] & 0x20) > 0
+        self.ambientHumiditySensorError = (body[4] & 0x40) > 0
+        self.storageHumiditySensorError = (body[4] & 0x80) > 0
+        self.radarSensor1Error = (body[5] & 0x01) > 0
+        self.radarSensor2Error = (body[5] & 0x02) > 0
+        self.radarSensor3Error = (body[5] & 0x04) > 0
+        self.radarSensor4Error = (body[5] & 0x08) > 0
+        self.radarSensor5Error = (body[5] & 0x10) > 0
+        self.functionZoneTemperatureSensorError = (body[5] & 0x20) > 0
+        self.normalZoneTemperatureSensorError = (body[5] & 0x40) > 0
+        self.humidityControlSensorError = (body[5] & 0x80) > 0
+        self.openDoorTooFrequently = (body[6] & 0x01) > 0
+        self.storageDoorAloneOpenFrequently = (body[6] & 0x02) > 0
+        self.freezingDoorAloneOpenFrequently = (body[6] & 0x04) > 0
+        self.barDoorAloneOpenFrequently = (body[6] & 0x08) > 0
+        self.snWritingError = (body[6] & 0x20) > 0
+        self.storageTemperatureOverheating = (body[6] & 0x40) > 0
+        self.storageTemperatureTooLow = (body[6] & 0x80) > 0
+        self.storageHeatingWireSensorError = (body[7] & 0x01) > 0
+        self.uartReceiverError = (body[7] & 0x02) > 0
+        self.crystalliteMainSensorError = (body[7] & 0x08) > 0
+        self.crystalliteBase1SensorError = (body[7] & 0x10) > 0
+        self.crystalliteBase2SensorError = (body[7] & 0x20) > 0
+        self.crystalliteBase3SensorError = (body[7] & 0x40) > 0
+        self.crystalliteBase4SensorError = (body[7] & 0x80) > 0
+
+
+class CANotify00MessageBody(MessageBody):
+    """CA message notify00 body."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize CA message notify00 body."""
+        super().__init__(body)
+        self.refrigerator_door = (body[1] & 0x01) > 0
+        self.freezer_door = (body[1] & 0x02) > 0
+        self.bar_door = (body[1] & 0x04) > 0
+        self.flex_zone_door = (body[1] & 0x010) > 0
+
+
+class CANotify01MessageBody(MessageBody):
+    """CA message notify01 body."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize CA message notify01 body."""
+        super().__init__(body)
+        self.refrigerator_setting_temp = body[37]
+        self.freezer_setting_temp = -12 - body[38]
+        flex_zone_setting_temp = body[39]
+        right_flex_zone_setting_temp = body[40]
+
+        if TEMP_POS_LOWER_VALUE <= flex_zone_setting_temp <= TEMP_POS_UPPER_VALUE:
+            self.flex_zone_setting_temp = flex_zone_setting_temp - 19
+        elif TEMP_NEG_LOWER_VALUE <= flex_zone_setting_temp <= TEMP_NEG_UPPER_VALUE:
+            self.flex_zone_setting_temp = 30 - flex_zone_setting_temp
+        else:
+            self.flex_zone_setting_temp = 0
+        if TEMP_POS_LOWER_VALUE <= right_flex_zone_setting_temp <= TEMP_POS_UPPER_VALUE:
+            self.right_flex_zone_setting_temp = right_flex_zone_setting_temp - 19
+        elif (
+            TEMP_NEG_LOWER_VALUE <= right_flex_zone_setting_temp <= TEMP_NEG_UPPER_VALUE
+        ):
+            self.right_flex_zone_setting_temp = 30 - right_flex_zone_setting_temp
+        else:
+            self.right_flex_zone_setting_temp = 0
+
+
+class MessageCAResponse(MessageResponse):
+    """CA message response."""
+
+    def __init__(
+        self,
+        message: bytes,
+        model: str = "00000000",
+    ) -> None:
+        """Initialize CA message response."""
+        super().__init__(bytearray(message))
+        # uptable["dataType"] 0x02 and messageBytes[0] 0x00
+        # uptable["dataType"] 0x03 and messageBytes[0] 0x00
+        # uptable["dataType"] 0x04 and messageBytes[0] 0x02)
+        if (
+            self.header_type == ListTypes.AA
+            and (
+                (
+                    self.message_type in [MessageType.query, MessageType.set]
+                    and self.body_type == ListTypes.X00
+                )
+                or (
+                    self.message_type == MessageType.notify1
+                    and self.body_type == ListTypes.X02
+                )
+            )
+            and len(self.body) > MIN_CA_GENERAL_BODY_LENGTH
+        ):
+            self.set_body(CAGeneralMessageBody(super().body))
+        # uptable["dataType"] 0x06 and messageBytes[0] 0x01
+        # uptable["dataType"] 0x03 and messageBytes[0] 0x02
+        elif (
+            self.header_type == ListTypes.AA
+            and (
+                (
+                    self.message_type == MessageType.exception
+                    and self.body_type == ListTypes.X01
+                )
+                or (
+                    self.message_type == MessageType.query
+                    and self.body_type == ListTypes.X02
+                )
+            )
+            and len(super().body) >= MIN_CA_EXCEPTION_BODY_LENGTH
+        ):
+            self.set_body(CAExceptionMessageBody(super().body))
+        # uptable["dataType"] 0x04 and messageBytes[0] 0x00
+        elif self.header_type == ListTypes.AA and (
+            self.message_type == MessageType.notify1 and self.body_type == ListTypes.X00
+        ):
+            self.set_body(CANotify00MessageBody(super().body))
+        # uptable["dataType"] 0x04 and messageBytes[0] 0x01
+        # uptable["dataType"] 0x03 and messageBytes[0] 0x01
+        elif self.header_type == ListTypes.AA and (
+            self.message_type in [MessageType.query, MessageType.notify1]
+            and self.body_type == ListTypes.X01
+        ):
+            self.set_body(CANotify01MessageBody(super().body))
+        elif (
+            self.header_type == ListTypes.X55
+            and self.message_type
+            in [MessageType.set, MessageType.query, MessageType.notify1]
+            and self.body_type == ListTypes.X00
+        ):
+            self.set_body(
+                CAGeneralToshibaMessageBody(super().body, model, self.message_type),
+            )
+        self.set_attr()

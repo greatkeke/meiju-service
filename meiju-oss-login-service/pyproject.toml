@@ -1,0 +1,35 @@
+[project]
+name = "meiju-oss-login-service"
+version = "0.1.0"
+description = "Open-source adapter for the Midea Meiju app: login, device discovery and LAN control"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2.10,<3",
+    "uvicorn[standard]>=0.34,<1",
+    # --- 局域网直控（midea-local 运行时依赖）---
+    "aiohttp>=3.10",
+    "aiofiles>=24.1",
+    "anyio>=4.6",
+    "colorlog>=6.8",
+    "defusedxml>=0.7",
+    "ifaddr>=0.2",
+    "pycryptodome>=3.20",
+    "platformdirs>=4.3",
+    "typing_extensions>=4.16",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "httpx>=0.28,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+package = false

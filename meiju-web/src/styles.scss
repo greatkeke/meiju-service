@@ -1,0 +1,46 @@
+/* Global design tokens for the Meiju-style login clone. */
+:root {
+  --mj-blue: #00a7e1;
+  --mj-blue-dark: #0a63c4;
+  --mj-blue-deep: #08203f;
+  --mj-ink: #16202c;
+  --mj-ink-soft: #6b7a8d;
+  --mj-line: #e6ecf3;
+  --mj-surface: #ffffff;
+  --mj-radius-lg: 22px;
+  --mj-radius-md: 14px;
+  --mj-shadow: 0 24px 60px rgba(6, 30, 60, 0.22);
+  --mj-font: 'PingFang SC', 'Microsoft YaHei', 'HarmonyOS Sans SC', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--mj-font);
+  color: var(--mj-ink);
+  background: #dfe8f2;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: 0;
+}
+
+input {
+  font-family: inherit;
+  outline: none;
+  border: 0;
+  background: transparent;
+}
+
+a {
+  color: inherit;
+}

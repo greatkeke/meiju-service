@@ -1,0 +1,230 @@
+"""Midea local DC device."""
+
+import logging
+from enum import StrEnum
+from typing import Any, ClassVar, Unpack
+
+from midealocal.const import DeviceType
+from midealocal.device import (
+    MideaDevice,
+    MideaDeviceInitKwargs,
+    dict_translator,
+    list_translator,
+)
+from midealocal.exceptions import ValueWrongType
+
+from .message import (
+    MessageDCResponse,
+    MessagePower,
+    MessageQuery,
+    MessageSetAISwitch,
+    MessageStart,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+WASHING_DATA_SIZE = 12
+WASHING_DATA_FILL = 0xFF
+
+
+class DeviceAttributes(StrEnum):
+    """Midea DC device attributes."""
+
+    power = "power"
+    start = "start"
+    status = "status"
+    program = "program"
+    intensity = "intensity"
+    dryness_level = "dryness_level"
+    dry_temperature = "dry_temperature"
+    error_code = "error_code"
+    door_warn = "door_warn"
+    ai_switch = "ai_switch"
+    material = "material"
+    water_box = "water_box"
+    progress = "progress"
+    time_remaining = "time_remaining"
+
+
+class MideaDCDevice(MideaDevice):
+    """Midea DC device."""
+
+    _status: ClassVar[dict[int, str]] = {
+        0: "idle",
+        1: "standby",
+        2: "start",
+        3: "pause",
+        4: "end",
+        5: "prevent_wrinkle_end",
+        6: "delay_choosing",
+        7: "fault",
+        8: "delay",
+        9: "delay_pause",
+    }
+
+    _program: ClassVar[dict[int, str]] = {
+        0: "cotton",
+        1: "fiber",
+        2: "mixed_wash",
+        3: "jean",
+        4: "bedsheet",
+        5: "outdoor",
+        6: "down_jacket",
+        7: "plush",
+        8: "wool",
+        9: "dehumidify",
+        10: "cold_air_fresh_air",
+        11: "hot_air_dry",
+        12: "sport_clothes",
+        13: "underwear",
+        14: "baby_clothes",
+        15: "shirt",
+        16: "standard",
+        17: "quick_dry",
+        18: "fresh_air",
+        19: "low_temp_dry",
+        20: "eco_dry",
+        21: "quick_dry_30",
+        22: "towel",
+        23: "intelligent_dry",
+        24: "steam_care",
+        25: "big",
+        26: "fixed_time_dry",
+        27: "night_dry",
+        28: "bracket_dry",
+        29: "western_trouser",
+        30: "dehumidification",
+        31: "smart_dry",
+        32: "four_piece_suit",
+        33: "warm_clothes",
+        34: "quick_dry_20",
+        35: "steam_sterilize",
+        36: "enzyme",
+        37: "big_60",
+        38: "steam_no_iron",
+        39: "air_wash",
+        40: "bed_clothes",
+        41: "little_fast_dry",
+        42: "small_piece_dry",
+        43: "big_dry",
+        44: "wool_nurse",
+        45: "sun_quilt",
+        46: "fresh_remove_smell",
+        47: "bucket_self_clean",
+        48: "silk",
+        49: "sterilize",
+    }
+
+    def __init__(
+        self,
+        *,
+        customize: str,  # noqa: ARG002
+        **kwargs: Unpack[MideaDeviceInitKwargs],
+    ) -> None:
+        """Initialize Midea DC device."""
+        super().__init__(
+            device_type=DeviceType.DC,
+            **kwargs,
+            attributes={
+                DeviceAttributes.power: False,
+                DeviceAttributes.start: False,
+                DeviceAttributes.status: "Unknown",
+                DeviceAttributes.program: "None",
+                DeviceAttributes.intensity: None,
+                DeviceAttributes.dryness_level: None,
+                DeviceAttributes.dry_temperature: None,
+                DeviceAttributes.error_code: None,
+                DeviceAttributes.door_warn: None,
+                DeviceAttributes.ai_switch: None,
+                DeviceAttributes.material: None,
+                DeviceAttributes.water_box: None,
+                DeviceAttributes.progress: "Unknown",
+                DeviceAttributes.time_remaining: None,
+            },
+        )
+
+    def build_query(self) -> list[MessageQuery]:
+        """Midea DC device build query."""
+        return [MessageQuery(self._message_protocol_version)]
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Midea DC device process message."""
+        message = MessageDCResponse(msg)
+        _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        progress = [
+            "prog0",
+            "prog1",
+            "prog2",
+            "prog3",
+            "prog4",
+            "prog5",
+            "prog6",
+            "prog7",
+        ]
+        return self.update_attributes_from_message(
+            message,
+            {
+                # 0 means no progress bit is set; prevent value out of index range
+                DeviceAttributes.progress: list_translator(progress, min_index=1),
+                DeviceAttributes.status: dict_translator(MideaDCDevice._status),
+                DeviceAttributes.program: dict_translator(MideaDCDevice._program),
+                DeviceAttributes.door_warn: bool,
+                DeviceAttributes.ai_switch: bool,
+            },
+        )
+
+    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Midea DC device set attribute."""
+        if not isinstance(value, bool):
+            raise ValueWrongType("[dc] Expected bool")
+        message: MessagePower | MessageStart | MessageSetAISwitch | None = None
+        if attr == DeviceAttributes.power:
+            message = MessagePower(self._message_protocol_version)
+            message.power = value
+            self.build_send(message)
+        elif attr == DeviceAttributes.start:
+            message = MessageStart(self._message_protocol_version)
+            message.start = value
+            message.washing_data = self._build_washing_data()
+            self.build_send(message)
+        elif attr == DeviceAttributes.ai_switch:
+            message = MessageSetAISwitch(self._message_protocol_version)
+            message.ai_switch = value
+            self.build_send(message)
+
+    def _get_key_from_value(
+        self,
+        value: str,
+        mapping: dict[int, str],
+        default: int = WASHING_DATA_FILL,
+    ) -> int:
+        """Get the key from the value in the mapping."""
+        for key, val in mapping.items():
+            if val == value:
+                return key
+        return default
+
+    def _build_washing_data(self) -> bytearray:
+        """Build washing data."""
+        washing_data = bytearray(
+            [WASHING_DATA_FILL] * WASHING_DATA_SIZE,
+        )
+
+        washing_data[1] = self._get_key_from_value(
+            str(self.get_attribute(DeviceAttributes.program)),
+            self._program,
+        )
+
+        if isinstance(intensity := self.get_attribute(DeviceAttributes.intensity), int):
+            washing_data[6] = int(intensity)
+        if isinstance(
+            dryness_level := self.get_attribute(DeviceAttributes.dryness_level),
+            int,
+        ):
+            washing_data[7] = dryness_level
+        return washing_data
+
+
+class MideaAppliance(MideaDCDevice):
+    """Midea DC appliance."""

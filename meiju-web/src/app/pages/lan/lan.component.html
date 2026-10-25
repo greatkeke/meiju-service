@@ -1,0 +1,155 @@
+<div class="page">
+  <header class="head">
+    <div>
+      <h1>真机（局域网）</h1>
+      <p class="sub">直连美的设备：UDP 发现 → 读状态 → 下发控制</p>
+    </div>
+  </header>
+
+  @if (cacheState(); as cache) {
+    <div class="cache-bar">
+      <span>
+        🔑 密钥缓存 <b>{{ cache.count }}</b> 台 · 账号 {{ cache.account || '—' }} ·
+        {{ humanAge(cache.age) }}
+      </span>
+      <button type="button" class="link" (click)="goLogin()">重新登录取密钥</button>
+    </div>
+  }
+
+  @if (note()) {
+    <p class="note">{{ note() }}</p>
+  }
+  @if (error()) {
+    <p class="error">{{ error() }}</p>
+  }
+
+  <section class="card">
+    <div class="card-head">
+      <h2>① 密钥缓存</h2>
+      <button type="button" (click)="refreshCache()" [disabled]="busy() === 'cache'">
+        {{ busy() === 'cache' ? '刷新中…' : '刷新' }}
+      </button>
+    </div>
+    <p class="hint">
+      共 {{ cached().length }} 台。密钥来自美居云 <code>/v2/iot/secure/getToken</code>，获取时不需要在局域网。
+    </p>
+    <ul class="devices">
+      @for (device of cached(); track device.device_id) {
+        <li [class.active]="selected() === device.device_id" (click)="select(device.device_id)">
+          <span class="name">{{ device.name || '未命名设备' }}</span>
+          <span class="tag">{{ device.type }}</span>
+          <span class="tag soft">{{ device.device_id }}</span>
+          @if (!device.has_keys) {
+            <span class="tag warn">无密钥</span>
+          }
+        </li>
+      }
+    </ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>② 局域网发现</h2>
+      <button type="button" (click)="doDiscover()" [disabled]="busy() === 'discover'">
+        {{ busy() === 'discover' ? '扫描中…' : '扫描局域网' }}
+      </button>
+    </div>
+    <p class="hint">
+      需要与设备在同一网段。设备通过 UDP 6445 广播应答，扫描约需数秒。
+    </p>
+    @if (discovered().length) {
+      <ul class="devices">
+        @for (device of discovered(); track device.device_id) {
+          <li [class.active]="selected() === (device.cloud_id || idStr(device.device_id))" (click)="select(device.cloud_id || idStr(device.device_id))">
+            <span class="name">{{ device.name || device.sn }}</span>
+            <span class="tag">{{ device.type }}</span>
+            <span class="tag soft">{{ device.ip }}:{{ device.port }}</span>
+            <span class="tag soft">protocol {{ device.protocol }}</span>
+          </li>
+        }
+      </ul>
+    } @else {
+      <p class="empty">还没有扫描结果。</p>
+    }
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>③ 读取状态</h2>
+      <button type="button" (click)="loadStatus()" [disabled]="!selected() || busy() === 'status'">
+        {{ busy() === 'status' ? '读取中…' : '读取' }}
+      </button>
+    </div>
+    @if (!selected()) {
+      <p class="empty">先在上面选一台设备。</p>
+    } @else {
+      <p class="hint">当前设备：<b>{{ selectedName() }}</b>（{{ selected() }}）</p>
+      @if (status(); as st) {
+        <p class="hint">
+          类：{{ st.class || '—' }} · available：
+          {{ st.available === null || st.available === undefined ? '—' : st.available }}
+        </p>
+        @if (attributes().length) {
+          <table class="attrs">
+            <thead>
+              <tr>
+                <th>属性</th>
+                <th>当前值</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (row of attributes(); track row[0]) {
+                <tr>
+                  <td>{{ row[0] }}</td>
+                  <td>{{ formatValue(row[1]) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        } @else {
+          <p class="empty">没有读到属性（设备可能离线，或该机型未实现）。</p>
+          @if (st.raw) {
+            <pre class="raw">{{ st.raw }}</pre>
+          }
+        }
+      }
+    }
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>④ 下发控制</h2>
+      <button type="button" (click)="sendControl()" [disabled]="!selected() || !attrName() || busy() === 'control'">
+        {{ busy() === 'control' ? '下发中…' : '下发' }}
+      </button>
+    </div>
+    <div class="form">
+      <label>
+        <span>属性</span>
+        <select [ngModel]="attrName()" (ngModelChange)="attrName.set($event)">
+          @for (key of attrKeys(); track key) {
+            <option [value]="key">{{ key }}</option>
+          }
+          @if (!attrKeys().length) {
+            <option value="">（先读取状态获取属性列表）</option>
+          }
+        </select>
+      </label>
+      <label>
+        <span>值</span>
+        <input
+          type="text"
+          placeholder="true / false / 数字 / 文本"
+          [ngModel]="attrValue()"
+          (ngModelChange)="attrValue.set($event)"
+        />
+      </label>
+    </div>
+    <p class="hint warn-text">
+      下发前会弹确认框。建议先用只读方式确认属性名，再动开关类属性。
+    </p>
+    @if (lastResult()) {
+      <pre class="raw">{{ lastResult() }}</pre>
+    }
+  </section>
+</div>

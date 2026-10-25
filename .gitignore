@@ -1,0 +1,32 @@
+# ============================================================
+# 单仓库：只纳入前后端两个工程，其余（个人文件等）忽略
+# ============================================================
+/*
+!/.gitignore
+!/README.md
+!/meiju-oss-login-service/
+!/meiju-web/
+
+# ---- 依赖 / 构建产物 ----
+.venv/
+node_modules/
+dist/
+.angular/
+__pycache__/
+*.pyc
+.uv-cache/
+.npm-cache/
+
+# ---- 本地运行时数据（含敏感信息，绝不入库）----
+meiju-oss-login-service/var/
+meiju-oss-login-service/.env
+meiju-oss-login-service/probes/
+**/lan_keys.json
+**/session.json
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

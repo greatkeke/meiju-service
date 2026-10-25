@@ -1,0 +1,226 @@
+"""Midea local E1 device."""
+
+import logging
+from enum import StrEnum
+from typing import Any, ClassVar, Unpack
+
+from midealocal.const import DeviceType
+from midealocal.device import MideaDevice, MideaDeviceInitKwargs, list_translator
+from midealocal.exceptions import ValueWrongType
+
+from .message import (
+    MessageE1Response,
+    MessageLock,
+    MessagePower,
+    MessageQuery,
+    MessageStorage,
+    MessageWork,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class DeviceAttributes(StrEnum):
+    """Midea E1 device attributes."""
+
+    power = "power"
+    status = "status"
+    mode = "mode"
+    additional = "additional"
+    door = "door"
+    rinse_aid = "rinse_aid"
+    salt = "salt"
+    child_lock = "child_lock"
+    uv = "uv"
+    dry = "dry"
+    dry_status = "dry_status"
+    storage = "storage"
+    storage_status = "storage_status"
+    time_remaining = "time_remaining"
+    progress = "progress"
+    storage_remaining = "storage_remaining"
+    temperature = "temperature"
+    humidity = "humidity"
+    waterswitch = "waterswitch"
+    water_lack = "water_lack"
+    error_code = "error_code"
+    softwater = "softwater"
+    wrong_operation = "wrong_operation"
+    bright = "bright"
+
+
+class MideaE1Device(MideaDevice):
+    """Midea E1 device."""
+
+    _modes: ClassVar[dict[int, str]] = {
+        0x00: "none",  # BYTE_MODE_NEUTRAL_GEAR
+        0x01: "auto_wash",  # BYTE_MODE_AUTO_WASH
+        0x02: "strong_wash",  # BYTE_MODE_STRONG_WASH
+        0x03: "standard_wash",  # BYTE_MODE_STANDARD_WASH
+        0x04: "eco_wash",  # BYTE_MODE_ECO_WASH
+        0x05: "glass_wash",  # BYTE_MODE_GLASS_WASH
+        0x06: "hour_wash",  # BYTE_MODE_HOUR_WASH
+        0x07: "fast_wash",  # BYTE_MODE_FAST_WASH
+        0x08: "soak_wash",  # BYTE_MODE_SOAK_WASH
+        0x09: "90min",  # BYTE_MODE_90MIN_WASH
+        0x0A: "self_clean",  # BYTE_MODE_SELF_CLEAN
+        0x0B: "fruit_wash",  # BYTE_MODE_FRUIT_WASH
+        0x0C: "self_define",  # BYTE_MODE_SELF_DEFINE
+        0x0D: "germ",  # BYTE_MODE_GERM ???
+        0x0E: "bowl_wash",  # BYTE_MODE_BOWL_WASH
+        0x0F: "kill_germ",  # BYTE_MODE_KILL_GERM
+        0x10: "sea_food_wash",  # BYTE_MODE_SEA_FOOD_WASH
+        0x12: "hot_pot_wash",  # BYTE_MODE_HOT_POT_WASH
+        0x13: "quiet_night_wash",  # BYTE_MODE_QUIET_NIGHT_WASH
+        0x14: "less_wash",  # BYTE_MODE_LESS_WASH
+        0x16: "oil_net_wash",  # BYTE_MODE_OIL_NET_WASH
+        0x19: "cloud_wash",  # BYTE_MODE_CLOUD_WASH
+    }
+    _status: ClassVar[dict[int, str]] = {
+        0x00: "off",
+        0x01: "cancel",
+        0x02: "delay",
+        0x03: "running",
+        0x04: "error",
+        0x05: "soft_gear",
+    }
+    _progress: ClassVar[list[str]] = [
+        "idle",
+        "pre_wash",
+        "wash",
+        "rinse",
+        "dry",
+        "complete",
+    ]
+
+    def __init__(
+        self,
+        *,
+        customize: str,  # noqa: ARG002
+        **kwargs: Unpack[MideaDeviceInitKwargs],
+    ) -> None:
+        """Initialize Midea E1 device."""
+        super().__init__(
+            device_type=DeviceType.E1,
+            **kwargs,
+            attributes={
+                DeviceAttributes.power: False,
+                DeviceAttributes.status: None,
+                DeviceAttributes.mode: 0,
+                DeviceAttributes.additional: 0,
+                DeviceAttributes.uv: False,
+                DeviceAttributes.dry: False,
+                DeviceAttributes.dry_status: False,
+                DeviceAttributes.door: False,
+                DeviceAttributes.rinse_aid: False,
+                DeviceAttributes.salt: False,
+                DeviceAttributes.child_lock: False,
+                DeviceAttributes.storage: False,
+                DeviceAttributes.storage_status: False,
+                DeviceAttributes.time_remaining: None,
+                DeviceAttributes.progress: None,
+                DeviceAttributes.storage_remaining: None,
+                DeviceAttributes.temperature: None,
+                DeviceAttributes.humidity: None,
+                DeviceAttributes.waterswitch: False,
+                DeviceAttributes.water_lack: False,
+                DeviceAttributes.error_code: None,
+                DeviceAttributes.softwater: 0,
+                DeviceAttributes.wrong_operation: None,
+                DeviceAttributes.bright: 0,
+            },
+        )
+
+    @property
+    def modes(self) -> dict[int, str]:
+        """Return supported work modes.
+
+        Returns
+        -------
+        Mapping of mode codes to names.
+
+        """
+        return MideaE1Device._modes.copy()
+
+    def build_query(self) -> list[MessageQuery]:
+        """Midea E1 device build query."""
+        return [MessageQuery(self._message_protocol_version)]
+
+    def set_work_mode(self, mode: int) -> None:
+        """Set the dishwasher work mode and start the selected program.
+
+        Raises
+        ------
+        ValueWrongType
+            If the mode code is not supported.
+
+        """
+        if mode not in MideaE1Device._modes:
+            msg = f"[e1] Unsupported work mode: {mode}"
+            raise ValueWrongType(msg)
+
+        message = MessageWork(self._message_protocol_version)
+        message.mode = mode
+        self.build_send(message)
+
+    def start_work(self) -> None:
+        """Start the dishwasher using its currently selected work mode.
+
+        Raises
+        ------
+        ValueWrongType
+            If there is no selected work mode, or the stored work mode is
+            not a valid name.
+
+        """
+        mode_name = self.get_attribute(DeviceAttributes.mode)
+        if mode_name is None or mode_name == 0:
+            msg = "[e1] No work mode selected"
+            raise ValueWrongType(msg)
+        if not isinstance(mode_name, str):
+            msg = "[e1] Invalid work mode"
+            raise ValueWrongType(msg)
+
+        mode = next(
+            (code for code, name in MideaE1Device._modes.items() if name == mode_name),
+            None,
+        )
+        if mode is None or mode == 0:
+            msg = "[e1] No work mode selected"
+            raise ValueWrongType(msg)
+        self.set_work_mode(mode)
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Midea E1 device process message."""
+        message = MessageE1Response(msg)
+        _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        return self.update_attributes_from_message(
+            message,
+            {
+                DeviceAttributes.status: MideaE1Device._status.get,
+                DeviceAttributes.progress: list_translator(MideaE1Device._progress),
+                DeviceAttributes.mode: MideaE1Device._modes.get,
+            },
+        )
+
+    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Midea E1 device set attribute."""
+        if not isinstance(value, bool):
+            raise ValueWrongType("[e1] Expected bool")
+        message: MessagePower | MessageLock | MessageStorage | None = None
+        if attr == DeviceAttributes.power:
+            message = MessagePower(self._message_protocol_version)
+            message.power = value
+            self.build_send(message)
+        elif attr == DeviceAttributes.child_lock:
+            message = MessageLock(self._message_protocol_version)
+            message.lock = value
+            self.build_send(message)
+        elif attr == DeviceAttributes.storage:
+            message = MessageStorage(self._message_protocol_version)
+            message.storage = value
+            self.build_send(message)
+
+
+class MideaAppliance(MideaE1Device):
+    """Midea E1 appliance."""

@@ -1,0 +1,245 @@
+"""Midea local B1 message."""
+
+from midealocal.const import MAX_BYTE_VALUE, DeviceType
+from midealocal.message import (
+    ListTypes,
+    MessageBody,
+    MessageRequest,
+    MessageResponse,
+    MessageType,
+)
+
+X31_SUBTYPE = 5
+X31_MODE_OFFSET = 9
+X31_TEMPERATURE_HIGH_OFFSET = 10
+X31_TEMPERATURE_LOW_OFFSET = 11
+X31_TEMPERATURE_UNDERSIDE_OFFSET = 13
+X31_TARGET_TEMPERATURE_HIGH_OFFSET = 18
+X31_TARGET_TEMPERATURE_LOW_OFFSET = 19
+X31_MIN_BODY_LENGTH = X31_TARGET_TEMPERATURE_LOW_OFFSET + 1
+
+X01_STATUS_OFFSET = 31
+X01_FLAGS_OFFSET = 32
+X01_MIN_BODY_LENGTH = X01_FLAGS_OFFSET + 1
+X01_MODE_OFFSET = 7
+X01_PROGRAM_VARIANT_OFFSET = 8
+X01_TARGET_TEMPERATURE_OFFSET = 14
+X01_TIME_REMAINING_HOURS_OFFSET = 22
+X01_TIME_REMAINING_MINUTES_OFFSET = 23
+X01_TEMPERATURE_HIGH_OFFSET = 25
+X01_TEMPERATURE_LOW_OFFSET = 26
+X01_TEMPERATURE_FALLBACK_HIGH_OFFSET = 27
+X01_TEMPERATURE_FALLBACK_LOW_OFFSET = 28
+
+
+class MessageB1Base(MessageRequest):
+    """B1 message base."""
+
+    def __init__(
+        self,
+        protocol_version: int,
+        message_type: MessageType,
+        body_type: ListTypes,
+    ) -> None:
+        """Initialize B1 message base."""
+        super().__init__(
+            device_type=DeviceType.B1,
+            protocol_version=protocol_version,
+            message_type=message_type,
+            body_type=body_type,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        raise NotImplementedError
+
+
+class MessageQuery(MessageB1Base):
+    """B1 message query."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize B1 message query."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X00,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray([])
+
+
+class MessageQueryX01(MessageB1Base):
+    """B1 message query, X01 body variant.
+
+    Some B1 devices report ``MessageQuery`` (the X00 body) as an
+    unsupported protocol and never respond to it at all, leaving the
+    device with no working query (the B0 device has this same X00-query
+    problem on some models, with X01/X31 fallbacks that work instead).
+    This is the equivalent X01 fallback for B1, confirmed against a real
+    subtype-zero electric oven to return a response decodable with the
+    same byte layout as B0's X01 body (see ``B1Message01Body``).
+    """
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize B1 message query X01."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X01,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray([])
+
+
+class MessageQueryX31(MessageB1Base):
+    """B1 status query for the Lua-defined X31 protocols."""
+
+    def __init__(
+        self,
+        protocol_version: int,
+        *,
+        padded: bool = False,
+    ) -> None:
+        """Initialize an X31 query with the model's required body length."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X31,
+        )
+        self._padded = padded
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray([0x00]) if self._padded else bytearray()
+
+
+class B1MessageBody(MessageBody):
+    """B1 message body."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize B1 message body."""
+        super().__init__(body)
+        self.door = (body[16] & 0x02) > 0
+        self.status = body[1]
+        self.time_remaining = (0 if body[6] == MAX_BYTE_VALUE else body[6]) * 60 + (
+            0 if body[7] == MAX_BYTE_VALUE else body[7]
+        )
+        self.current_temperature = body[19]
+        self.tank_ejected = (body[16] & 0x04) > 0
+        self.water_shortage = (body[16] & 0x08) > 0
+        self.water_change_reminder = (body[16] & 0x10) > 0
+
+
+class B1Message01Body(MessageBody):
+    """B1 message 01 body.
+
+    Layout confirmed against a real subtype-zero electric oven (model
+    711001CJ): identical byte offsets to B0's ``B0Message01Body``, which
+    makes sense given the shared appliance-family protocol. The door bit
+    is confirmed correct: a physical test that opened the oven door for
+    real showed ``door=True`` (open) with no inversion needed - everything
+    else (status, time_remaining, temperature, tank/water flags) produced
+    sane values matching the device's known idle state. ``mode`` (byte 7)
+    and ``target_temperature`` (byte 14) were confirmed the same way: driving
+    the appliance by hand with a pause after every action showed both change
+    together on a programme switch and independently on a setpoint-only
+    change.
+    """
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize B1 message 01 body."""
+        super().__init__(body)
+        if len(body) >= X01_MIN_BODY_LENGTH:
+            self.door = (body[X01_FLAGS_OFFSET] & 0x02) > 0
+            self.status = body[X01_STATUS_OFFSET]
+            self.mode = body[X01_MODE_OFFSET]
+            self.program_variant = body[X01_PROGRAM_VARIANT_OFFSET]
+            self.target_temperature = body[X01_TARGET_TEMPERATURE_OFFSET]
+            self.time_remaining = (
+                0
+                if body[X01_TIME_REMAINING_HOURS_OFFSET] == MAX_BYTE_VALUE
+                else body[X01_TIME_REMAINING_HOURS_OFFSET]
+            ) * 60 + (
+                0
+                if body[X01_TIME_REMAINING_MINUTES_OFFSET] == MAX_BYTE_VALUE
+                else body[X01_TIME_REMAINING_MINUTES_OFFSET]
+            )
+            self.current_temperature = (body[X01_TEMPERATURE_HIGH_OFFSET] << 8) + body[
+                X01_TEMPERATURE_LOW_OFFSET
+            ]
+            if self.current_temperature == 0:
+                self.current_temperature = (
+                    body[X01_TEMPERATURE_FALLBACK_HIGH_OFFSET] << 8
+                ) + body[X01_TEMPERATURE_FALLBACK_LOW_OFFSET]
+            self.tank_ejected = (body[X01_FLAGS_OFFSET] & 0x04) > 0
+            self.water_shortage = (body[X01_FLAGS_OFFSET] & 0x08) > 0
+            self.water_change_reminder = (body[X01_FLAGS_OFFSET] & 0x10) > 0
+
+
+class B1Message31Body(MessageBody):
+    """Decode X31 layouts documented in the existing B1 Lua files."""
+
+    def __init__(self, body: bytearray, *, subtype5: bool = False) -> None:
+        """Decode the model-specific temperature layout and common mode."""
+        super().__init__(body)
+        if len(body) < X31_MIN_BODY_LENGTH:
+            return
+        self.status = body[1]
+        self.mode = body[X31_MODE_OFFSET]
+        self.door = (body[16] & 0x02) > 0
+        self.time_remaining = (0 if body[6] == MAX_BYTE_VALUE else body[6]) * 60 + (
+            0 if body[7] == MAX_BYTE_VALUE else body[7]
+        )
+        if subtype5:
+            self.current_temperature: int | None = (
+                body[X31_TEMPERATURE_HIGH_OFFSET] << 8
+            ) + body[X31_TEMPERATURE_LOW_OFFSET]
+            self.target_temperature = (
+                body[X31_TARGET_TEMPERATURE_HIGH_OFFSET] << 8
+            ) + body[X31_TARGET_TEMPERATURE_LOW_OFFSET]
+        else:
+            self.current_temperature = None
+            for offset in (
+                X31_TEMPERATURE_LOW_OFFSET,
+                X31_TEMPERATURE_UNDERSIDE_OFFSET,
+            ):
+                if 0 < body[offset] < MAX_BYTE_VALUE:
+                    self.current_temperature = body[offset]
+            if body[X31_TARGET_TEMPERATURE_LOW_OFFSET] != MAX_BYTE_VALUE:
+                self.target_temperature = body[X31_TARGET_TEMPERATURE_LOW_OFFSET]
+            self.tank_ejected = (body[16] & 0x04) > 0
+            self.water_shortage = (body[16] & 0x08) > 0
+            self.water_change_reminder = (body[16] & 0x10) > 0
+
+
+class MessageB1Response(MessageResponse):
+    """B1 message response."""
+
+    def __init__(
+        self,
+        message: bytes,
+        *,
+        model: str = "",
+        subtype: int = 0,
+    ) -> None:
+        """Initialize B1 message response."""
+        super().__init__(bytearray(message))
+        if self.message_type in [MessageType.notify1, MessageType.query]:
+            if self.body_type == ListTypes.X01:
+                self.set_body(B1Message01Body(super().body))
+            elif self.body_type == ListTypes.X31 and (
+                model == "0TVN50R6" or subtype == X31_SUBTYPE
+            ):
+                self.set_body(
+                    B1Message31Body(
+                        super().body,
+                        subtype5=subtype == X31_SUBTYPE and model != "0TVN50R6",
+                    ),
+                )
+            else:
+                self.set_body(B1MessageBody(super().body))
+        self.set_attr()

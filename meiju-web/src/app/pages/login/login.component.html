@@ -1,0 +1,68 @@
+<div class="stage">
+  <div class="aurora aurora-a"></div>
+  <div class="aurora aurora-b"></div>
+
+  <header class="brand">
+    <div class="logo" aria-hidden="true"><span>M</span></div>
+    <h1>美的美居</h1>
+    <p>登录一次 · 取设备密钥 · 之后离线控制</p>
+  </header>
+
+  <section class="sheet">
+    <div class="field">
+      <input
+        class="input"
+        type="text"
+        autocomplete="username"
+        placeholder="美居账号（手机号）"
+        [value]="account()"
+        (input)="account.set($any($event.target).value)"
+        (keyup.enter)="submit()"
+      />
+    </div>
+
+    <div class="field field--gap">
+      <input
+        class="input input--pwd"
+        [type]="showPassword() ? 'text' : 'password'"
+        autocomplete="current-password"
+        placeholder="密码"
+        [value]="password()"
+        (input)="password.set($any($event.target).value)"
+        (keyup.enter)="submit()"
+      />
+      <button class="eye" type="button" (click)="togglePassword()" [attr.aria-label]="showPassword() ? '隐藏密码' : '显示密码'">
+        {{ showPassword() ? '🙈' : '👁' }}
+      </button>
+    </div>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    }
+
+    <button class="primary" type="button" [disabled]="busy() || !ready()" (click)="submit()">
+      @if (busy()) {
+        <span class="spinner" aria-hidden="true"></span>
+        正在登录取密钥…
+      } @else {
+        登录并获取密钥
+      }
+    </button>
+
+    @if (cacheInfo()?.count) {
+      <button class="ghost" type="button" (click)="skip()">使用已有缓存进入</button>
+      <p class="hint">
+        账号 {{ cacheInfo()?.account || '—' }} · {{ cacheInfo()?.count }} 台设备 · 缓存于
+        {{ humanAge(cacheInfo()?.age ?? null) }}
+      </p>
+    }
+
+    <p class="hint">
+      密码只用于本次向美的云端换取设备密钥，不会保存到磁盘。
+      密钥缓存后即可离线控制设备；密钥失效时再回来登录。
+    </p>
+  </section>
+</div>

@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: midealocal
+Version: 0.0.0
+Summary: Vendored copy of midea-lan/midea-local (MIT) used by meiju-oss-login-service
+Requires-Python: >=3.11
+Requires-Dist: aiohttp
+Requires-Dist: aiofiles
+Requires-Dist: anyio
+Requires-Dist: colorlog
+Requires-Dist: defusedxml
+Requires-Dist: ifaddr
+Requires-Dist: pycryptodome
+Requires-Dist: platformdirs
+Requires-Dist: typing_extensions>=4.16.0

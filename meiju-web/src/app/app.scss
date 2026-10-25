@@ -1,0 +1,29 @@
+:host {
+  display: block;
+  min-height: 100vh;
+  background: radial-gradient(120% 90% at 50% 0%, #16324f 0%, #0a1524 70%);
+  padding: 24px 0;
+}
+
+/* On desktop the app is framed like a phone; on mobile it fills the viewport. */
+.device {
+  width: min(430px, 100vw);
+  min-height: min(920px, calc(100vh - 48px));
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 34px;
+  overflow: hidden;
+  box-shadow: 0 40px 100px rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 520px) {
+  :host {
+    padding: 0;
+  }
+
+  .device {
+    min-height: 100vh;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}

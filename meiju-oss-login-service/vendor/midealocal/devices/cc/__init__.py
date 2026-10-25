@@ -1,0 +1,458 @@
+"""Midea local CC device."""
+
+import logging
+from collections.abc import Mapping, Sequence
+from enum import StrEnum
+from typing import Any, ClassVar, Unpack, override
+
+from midealocal.base_classes.climate import (
+    TEMPERATURE_STEP_WHOLE,
+    MideaClimateDevice,
+    MideaFanMode,
+    MideaHVACMode,
+    MideaPreset,
+    MideaSwingMode,
+)
+from midealocal.const import DeviceType
+from midealocal.device import SKIP_ATTRIBUTE, MideaDeviceInitKwargs
+
+from .message import (
+    INDEX_TO_FE_MODE,
+    CCControlId,
+    CCFanSpeed3Level,
+    CCFanSpeed7Level,
+    CCFanSpeedFE,
+    MessageCCResponse,
+    MessageFEControl,
+    MessageQuery,
+    MessageSet,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class DeviceAttributes(StrEnum):
+    """Midea CC device attributes."""
+
+    power = "power"
+    mode = "mode"
+    target_temperature = "target_temperature"
+    fan_speed = "fan_speed"
+    eco_mode = "eco_mode"
+    sleep_mode = "sleep_mode"
+    night_light = "night_light"
+    aux_heating = "aux_heating"
+    swing = "swing"
+    ventilation = "ventilation"
+    temperature_precision = "temperature_precision"
+    fan_speed_level = "fan_speed_level"
+    indoor_temperature = "indoor_temperature"
+    aux_heat_status = "aux_heat_status"
+    auto_aux_heat_running = "auto_aux_heat_running"
+    temp_fahrenheit = "temp_fahrenheit"
+
+
+class DeviceHVACMode(MideaHVACMode):
+    """Midea CC device HVAC mode."""
+
+    OFF = 0
+    FAN_ONLY = 1
+    DRY = 2
+    HEAT = 3
+    COOL = 4
+    AUTO = 5
+
+
+class DeviceSwingMode(MideaSwingMode):
+    """Midea CC device swing mode."""
+
+    OFF = "off"
+    ON = "on"
+
+
+class MideaCCDevice(MideaClimateDevice):
+    """Midea CC device."""
+
+    # Generic HVAC mode names, ordered to match the protocol's mode index.
+    _device_hvac_modes: ClassVar[set[MideaHVACMode]] = {
+        DeviceHVACMode.OFF,
+        DeviceHVACMode.FAN_ONLY,
+        DeviceHVACMode.DRY,
+        DeviceHVACMode.HEAT,
+        DeviceHVACMode.COOL,
+        DeviceHVACMode.AUTO,
+    }
+
+    _device_swing_modes: ClassVar[Sequence[DeviceSwingMode]] = [
+        DeviceSwingMode.OFF,
+        DeviceSwingMode.ON,
+    ]
+
+    def __init__(
+        self,
+        *,
+        customize: str,  # noqa: ARG002
+        **kwargs: Unpack[MideaDeviceInitKwargs],
+    ) -> None:
+        """Initialize Midea CC device."""
+        super().__init__(
+            device_type=DeviceType.CC,
+            **kwargs,
+            attributes={
+                DeviceAttributes.power: False,
+                DeviceAttributes.mode: 1,
+                DeviceAttributes.target_temperature: 26.0,
+                DeviceAttributes.fan_speed: 0x80,
+                DeviceAttributes.sleep_mode: False,
+                DeviceAttributes.eco_mode: False,
+                DeviceAttributes.night_light: False,
+                DeviceAttributes.ventilation: False,
+                DeviceAttributes.aux_heating: False,
+                DeviceAttributes.aux_heat_status: 0,
+                DeviceAttributes.auto_aux_heat_running: False,
+                DeviceAttributes.swing: False,
+                DeviceAttributes.fan_speed_level: None,
+                DeviceAttributes.indoor_temperature: None,
+                DeviceAttributes.temperature_precision: 1,
+                DeviceAttributes.temp_fahrenheit: False,
+            },
+        )
+        self._fan_speeds: type[MideaFanMode] | None = None
+        # set once a 0xFE-format response is seen; selects the VRF control path
+        self._is_fe_format = False
+
+    @property
+    @override
+    def _preset_attributes(self) -> Mapping[MideaPreset, str]:
+        """Midea CC device presets."""
+        return {
+            MideaPreset.SLEEP: DeviceAttributes.sleep_mode,
+            MideaPreset.ECO: DeviceAttributes.eco_mode,
+        }
+
+    @property
+    @override
+    def hvac_modes(self) -> set[MideaHVACMode]:
+        """Midea CC device HVAC modes."""
+        return MideaCCDevice._device_hvac_modes
+
+    @property
+    @override
+    def swing_modes(self) -> list[MideaSwingMode]:
+        """Midea CC device HVAC modes."""
+        return list(MideaCCDevice._device_swing_modes)
+
+    @override
+    def hvac_mode(self, zone: int | None = None) -> MideaHVACMode | None:
+        """Midea CC device HVAC mode."""
+        power = self._attributes[DeviceAttributes.power]
+        if not isinstance(power, bool):
+            return None
+        if not power:
+            return DeviceHVACMode.OFF
+        mode = self._attributes[DeviceAttributes.mode]
+        try:
+            return (
+                DeviceHVACMode(mode)
+                if DeviceHVACMode(mode) != DeviceHVACMode.OFF
+                else None
+            )
+        except ValueError:
+            return None
+
+    @override
+    def set_hvac_mode(
+        self,
+        hvac_mode: MideaHVACMode,
+        zone: int | None = None,
+    ) -> None:
+        """Midea CC device set HVAC mode."""
+        if hvac_mode == DeviceHVACMode.OFF:
+            self.set_attribute(attr=DeviceAttributes.power, value=False)
+            return
+        if hvac_mode not in self.hvac_modes:
+            msg = f"[cc] Unsupported hvac mode: {hvac_mode}"
+            raise ValueError(msg)
+        self.set_attribute(
+            attr=DeviceAttributes.mode,
+            value=hvac_mode,
+        )
+
+    @property
+    @override
+    def fan_modes(self) -> list[MideaFanMode]:
+        """Midea CC device fan modes."""
+        if self._fan_speeds is None:
+            return []
+        return [*self._fan_speeds]
+
+    @property
+    @override
+    def fan_mode(self) -> MideaFanMode | None:
+        """Midea CC device fan mode."""
+        value = self._attributes[DeviceAttributes.fan_speed]
+        return (
+            self._fan_speeds[value.upper()]
+            if self._fan_speeds is not None and isinstance(value, str)
+            else None
+        )
+
+    def _fan_speed_code(self, fan_mode: str) -> int | None:
+        """Resolve a fan mode name to its raw protocol code, if valid."""
+        if not self._fan_speeds or not isinstance(fan_mode, str):
+            return None
+        try:
+            return int(self._fan_speeds[fan_mode.upper()])
+        except KeyError:
+            return None
+
+    @override
+    def set_fan_mode(self, fan_mode: MideaFanMode) -> None:
+        """Midea CC device set fan mode."""
+        if self._fan_speeds is None or fan_mode not in self._fan_speeds:
+            msg = f"[cc] Unsupported fan mode: {fan_mode}"
+            raise ValueError(msg)
+        self.set_attribute(attr=DeviceAttributes.fan_speed, value=fan_mode)
+
+    @property
+    @override
+    def swing_mode(self) -> MideaSwingMode | None:
+        """Midea CC device swing mode."""
+        swing = self._attributes[DeviceAttributes.swing]
+        if not isinstance(swing, bool):
+            return None
+        return DeviceSwingMode.ON if swing else DeviceSwingMode.OFF
+
+    @override
+    def set_swing_mode(self, swing_mode: MideaSwingMode) -> None:
+        """Midea CC device set swing mode."""
+        if swing_mode not in self.swing_modes:
+            msg = f"[cc] Unsupported swing mode: {swing_mode}"
+            raise ValueError(msg)
+        self.set_attribute(
+            attr=DeviceAttributes.swing,
+            value=swing_mode == DeviceSwingMode.ON,
+        )
+
+    @override
+    def current_temperature(self) -> float | None:
+        """Midea CC device current temperature."""
+        value = self._attributes.get(DeviceAttributes.indoor_temperature, None)
+        if not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    @override
+    def current_humidity(self) -> float | None:
+        """Midea CC device current humidity."""
+        return None
+
+    @override
+    def target_temperature(self, zone: int | None = None) -> float | None:
+        """Midea CC device target temperature."""
+        value = self._attributes.get(DeviceAttributes.target_temperature, None)
+        if not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    @override
+    def turn_on(self, zone: int | None = None) -> None:
+        """Midea CC device turn on."""
+        self.set_attribute(attr=DeviceAttributes.power, value=True)
+
+    @override
+    def turn_off(self, zone: int | None = None) -> None:
+        """Midea CC device turn off."""
+        self.set_attribute(attr=DeviceAttributes.power, value=False)
+
+    @property
+    @override
+    def temperature_step(self) -> float:
+        """Midea CC device temperature step."""
+        value = self._attributes[DeviceAttributes.temperature_precision]
+        if not isinstance(value, (int, float, str)):
+            return TEMPERATURE_STEP_WHOLE
+        return float(value)
+
+    def build_query(self) -> list[MessageQuery]:
+        """Midea CC device build query."""
+        return [MessageQuery(self._message_protocol_version)]
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Midea CC device process message."""
+        message = MessageCCResponse(msg)
+        _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        if getattr(message, "is_fe_format", False):
+            self._is_fe_format = True
+            _LOGGER.debug("[%s] _is_fe_format option True", self.device_id)
+
+        # fan_speed's translation depends on fan_speed_level, which may be
+        # updated by this same message but is declared later in
+        # DeviceAttributes -- capture the raw value and resolve it below,
+        # once every other attribute (including fan_speed_level) is settled.
+        fan_speed: int | None = None
+
+        def _capture_fan_speed(value: int) -> Any:  # noqa: ANN401
+            nonlocal fan_speed
+            fan_speed = value
+            return SKIP_ATTRIBUTE
+
+        new_status = self.update_attributes_from_message(
+            message,
+            {DeviceAttributes.fan_speed: _capture_fan_speed},
+        )
+        if (
+            fan_speed is not None
+            and self._attributes[DeviceAttributes.fan_speed_level] is not None
+        ):
+            if self._is_fe_format:
+                self._fan_speeds = CCFanSpeedFE
+            elif self._fan_speeds is None:
+                self._fan_speeds = (
+                    CCFanSpeed3Level
+                    if self._attributes[DeviceAttributes.fan_speed_level]
+                    else CCFanSpeed7Level
+                )
+            try:
+                self._attributes[DeviceAttributes.fan_speed] = self._fan_speeds(
+                    fan_speed,
+                ).name.lower()
+            except ValueError:
+                self._attributes[DeviceAttributes.fan_speed] = None
+            new_status[DeviceAttributes.fan_speed.value] = self._attributes[
+                DeviceAttributes.fan_speed
+            ]
+        aux_heating = (
+            self._attributes[DeviceAttributes.aux_heat_status] == 1
+            or self._attributes[DeviceAttributes.auto_aux_heat_running]
+        )
+        if self._attributes[DeviceAttributes.aux_heating] != aux_heating:
+            self._attributes[DeviceAttributes.aux_heating] = aux_heating
+            new_status[DeviceAttributes.aux_heating.value] = self._attributes[
+                DeviceAttributes.aux_heating
+            ]
+        return new_status
+
+    def make_message_set(self) -> MessageSet:
+        """Midea CC device make message set."""
+        message = MessageSet(self._message_protocol_version)
+        message.power = self._attributes[DeviceAttributes.power]
+        message.mode = self._attributes[DeviceAttributes.mode]
+        message.target_temperature = self._attributes[
+            DeviceAttributes.target_temperature
+        ]
+        fan_speed = self._attributes[DeviceAttributes.fan_speed]
+        if (code := self._fan_speed_code(fan_speed)) is not None:
+            message.fan_speed = code
+        message.eco_mode = self._attributes[DeviceAttributes.eco_mode]
+        message.sleep_mode = self._attributes[DeviceAttributes.sleep_mode]
+        message.night_light = self._attributes[DeviceAttributes.night_light]
+        message.aux_heat_status = self._attributes[DeviceAttributes.aux_heat_status]
+        message.swing = self._attributes[DeviceAttributes.swing]
+        return message
+
+    def _fe_temperature_value(self, target_temperature: float) -> int:
+        """Encode a target temperature for the 0xFE control protocol."""
+        return int(target_temperature * 2 + 80) & 0xFF
+
+    def _send_fe_control(self, controls: list[tuple[CCControlId, int]]) -> None:
+        """Build and send a 0xFE key-value control frame."""
+        self.build_send(
+            MessageFEControl(self._message_protocol_version, controls),
+        )
+
+    @override
+    def set_target_temperature(
+        self,
+        target_temperature: float,
+        hvac_mode: MideaHVACMode | None,
+        zone: int | None = None,
+    ) -> None:
+        """Midea CC device set target temperature."""
+        if self._is_fe_format:
+            controls: list[tuple[CCControlId, int]] = []
+            if hvac_mode is not None and hvac_mode != 0:
+                controls.append((CCControlId.POWER, 1))
+                controls.append(
+                    (CCControlId.MODE, INDEX_TO_FE_MODE.get(hvac_mode, 0x02)),
+                )
+            controls.append(
+                (
+                    CCControlId.TARGET_TEMPERATURE,
+                    self._fe_temperature_value(target_temperature),
+                ),
+            )
+            self._send_fe_control(controls)
+            return
+        message = self.make_message_set()
+        message.target_temperature = (
+            round(target_temperature / self.temperature_step) * self.temperature_step
+        )
+        if hvac_mode is not None:
+            message.power = hvac_mode != 0
+            message.mode = hvac_mode
+        self.build_send(message)
+
+    def _set_attribute_fe(self, attr: str, value: bool | float | str) -> None:
+        """Set an attribute on a 0xFE VRF panel via key-value control frames."""
+        if attr == DeviceAttributes.power:
+            self._send_fe_control([(CCControlId.POWER, 1 if value else 0)])
+        elif attr == DeviceAttributes.mode:
+            self._send_fe_control(
+                [
+                    (CCControlId.POWER, 1),
+                    (CCControlId.MODE, INDEX_TO_FE_MODE.get(int(value), 0x02)),
+                ],
+            )
+        elif attr == DeviceAttributes.fan_speed:
+            if (speed := self._fan_speed_code(str(value))) is not None:
+                self._send_fe_control([(CCControlId.FAN_SPEED, speed)])
+        elif attr == DeviceAttributes.eco_mode:
+            controls = [(CCControlId.ECO, 1 if value else 0)]
+            if value:
+                controls.append((CCControlId.SLEEP, 0))
+            self._send_fe_control(controls)
+        elif attr == DeviceAttributes.sleep_mode:
+            controls = [(CCControlId.SLEEP, 1 if value else 0)]
+            if value:
+                controls.append((CCControlId.ECO, 0))
+            self._send_fe_control(controls)
+        elif attr == DeviceAttributes.swing:
+            self._send_fe_control([(CCControlId.SWING, 0x06 if value else 0x00)])
+        # other attributes are not supported by the 0xFE control protocol
+
+    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Midea CC device set attribute."""
+        if self._is_fe_format:
+            self._set_attribute_fe(attr, value)
+            return
+        # if nat a sensor
+        if attr not in [
+            DeviceAttributes.indoor_temperature,
+            DeviceAttributes.temperature_precision,
+            DeviceAttributes.fan_speed_level,
+            DeviceAttributes.aux_heat_status,
+            DeviceAttributes.auto_aux_heat_running,
+        ]:
+            message = self.make_message_set()
+            if attr == DeviceAttributes.fan_speed:
+                if (code := self._fan_speed_code(str(value))) is not None:
+                    message.fan_speed = code
+            else:
+                setattr(message, str(attr), value)
+                if attr == DeviceAttributes.mode:
+                    setattr(message, str(DeviceAttributes.power.value), True)
+                elif attr == DeviceAttributes.eco_mode and value:
+                    setattr(message, str(DeviceAttributes.sleep_mode.value), False)
+                elif attr == DeviceAttributes.sleep_mode and value:
+                    setattr(message, str(DeviceAttributes.eco_mode.value), False)
+                elif attr == DeviceAttributes.aux_heating:
+                    if value:
+                        setattr(message, DeviceAttributes.aux_heat_status, 1)
+                    else:
+                        setattr(message, DeviceAttributes.aux_heat_status, 2)
+            self.build_send(message)
+
+
+class MideaAppliance(MideaCCDevice):
+    """Midea CC appliance."""
