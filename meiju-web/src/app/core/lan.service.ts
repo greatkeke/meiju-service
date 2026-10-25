@@ -30,7 +30,10 @@ export interface LanDevice {
 export interface LanStatus {
   device_id: number;
   class?: string;
+  type?: string;
   available?: boolean | null;
+  /** 该机型可下发的属性；null 表示未收录（可能全部可下发，也可能只读） */
+  settable?: string[] | null;
   attributes?: Record<string, unknown>;
   raw?: string;
 }

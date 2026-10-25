@@ -34,7 +34,19 @@ export class LanComponent {
     return Object.entries(attrs).sort(([a], [b]) => a.localeCompare(b));
   });
 
-  readonly attrKeys = computed(() => this.attributes().map(([k]) => k));
+  /** 只列出该机型真正能下发的属性，避免选到只读项后“点了没反应”。 */
+  readonly attrKeys = computed(() => {
+    const settable = this.status()?.settable;
+    if (settable && settable.length) {
+      return [...settable].sort();
+    }
+    return this.attributes().map(([k]) => k);
+  });
+
+  readonly hasSettableInfo = computed(() => {
+    const settable = this.status()?.settable;
+    return Boolean(settable && settable.length);
+  });
 
   readonly selectedName = computed(() => {
     const id = this.selected();

@@ -281,7 +281,7 @@ async def cmd_discover(extra_target: str | None) -> None:
 def _device_from(device_id: int, info: dict[str, Any], entry: dict[str, Any], method: str = "1"):
     keys = entry["keys"]
     kv = keys.get(method) or next(iter(keys.values()))
-    return device_selector(
+    device = device_selector(
         name=str(device_id),
         device_id=device_id,
         device_type=int(info["type"]),
@@ -296,6 +296,10 @@ def _device_from(device_id: int, info: dict[str, Any], entry: dict[str, Any], me
         mac=info.get("mac"),
         serial_number=info.get("sn"),
     )
+    if device is not None:
+        # 记录机型码，供控制接口做「可下发属性」提示
+        device._meiju_type = int(info["type"])  # noqa: SLF001
+    return device
 
 
 async def _open_with_keys(
