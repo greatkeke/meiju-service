@@ -39,6 +39,9 @@
           <span class="name">{{ device.name || '未命名设备' }}</span>
           <span class="tag">{{ device.type }}</span>
           <span class="tag soft">{{ device.device_id }}</span>
+          @if ((device.function_count ?? 0) > 0) {
+            <span class="tag" title="{{ (device.functions || []).join(', ') }}">{{ device.function_count }} 功能</span>
+          }
           @if (!device.has_keys) {
             <span class="tag warn">无密钥</span>
           }
@@ -63,6 +66,9 @@
           <li [class.active]="selected() === (device.cloud_id || idStr(device.device_id))" (click)="select(device.cloud_id || idStr(device.device_id))">
             <span class="name">{{ device.name || device.sn }}</span>
             <span class="tag">{{ device.type }}</span>
+            @if ((device.function_count ?? 0) > 0) {
+              <span class="tag" title="{{ (device.functions || []).join(', ') }}">{{ device.function_count }} 功能</span>
+            }
             <span class="tag soft">{{ device.ip }}:{{ device.port }}</span>
             <span class="tag soft">protocol {{ device.protocol }}</span>
           </li>
@@ -94,6 +100,14 @@
             {{ st.elapsed_ms }}ms
           }
         </p>
+        @if ((st.functions?.length ?? 0) > 0) {
+          <p class="hint funcs">
+            功能（{{ st.functions!.length }}）：
+            @for (fn of st.functions!; track fn) {
+              <span class="tag mini">{{ fn }}</span>
+            }
+          </p>
+        }
         @if (attributes().length) {
           <table class="attrs">
             <thead>

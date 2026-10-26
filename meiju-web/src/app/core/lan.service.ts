@@ -25,6 +25,8 @@ export interface LanDevice {
   model?: string | null;
   methods?: string[];
   has_keys: boolean;
+  function_count?: number;
+  functions?: string[];
 }
 
 export interface LanStatus {
@@ -38,6 +40,8 @@ export interface LanStatus {
   elapsed_ms?: number | null;
   /** 该机型可下发的属性；null 表示未收录（可能全部可下发，也可能只读） */
   settable?: string[] | null;
+  /** 该机型 lua 里的功能字段清单（发现即列出，不一定全部可下发） */
+  functions?: string[];
   attributes?: Record<string, unknown>;
   raw?: string;
 }
@@ -53,6 +57,8 @@ export interface LanDiscovered {
   sn: string;
   model: string;
   has_keys: boolean;
+  function_count?: number;
+  functions?: string[];
 }
 
 @Injectable({ providedIn: 'root' })

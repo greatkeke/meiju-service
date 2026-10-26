@@ -246,3 +246,15 @@
     cursor: pointer;
   }
 }
+
+.funcs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.tag.mini {
+  padding: 1px 7px;
+  font-size: 11px;
+}

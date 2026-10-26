@@ -25,6 +25,75 @@ router = APIRouter(tags=["lan"])
 
 # 已从各机型 set_attribute 实现中确认的可下发属性（仅用于给出准确报错）。
 # 未列出的机型改用「是否真的构建了报文」来判定。
+# 空调：midea-local 的通用 set 报文接受这些属性（部分只读，设备拒绝会 409）
+AC_SETTABLE: set[str] = {
+    "prompt_tone",
+    "power",
+    "mode",
+    "target_temperature",
+    "min_temperature",
+    "max_temperature",
+    "fan_speed",
+    "swing_vertical",
+    "swing_horizontal",
+    "smart_eye",
+    "dry",
+    "aux_heating",
+    "boost_mode",
+    "power_saving",
+    "sleep_mode",
+    "frost_protect",
+    "comfort_mode",
+    "eco_mode",
+    "natural_wind",
+    "temp_fahrenheit",
+    "screen_display",
+    "screen_display_alternate",
+    "full_dust",
+    "indoor_temperature",
+    "outdoor_temperature",
+    "indirect_wind",
+    "indoor_humidity",
+    "breezeless",
+    "total_energy_consumption",
+    "total_operating_consumption",
+    "current_energy_consumption",
+    "realtime_power",
+    "electrify_time",
+    "total_operating_time",
+    "current_operating_time",
+    "fresh_air_power",
+    "fresh_air_fan_speed",
+    "fresh_air_mode",
+    "wind_lr_angle",
+    "wind_ud_angle",
+    "rate_select",
+    "out_silent",
+    "anion",
+    "sound",
+    "self_clean",
+    "pmv",
+    "error_code",
+    "compressor_frequency",
+    "target_compressor_frequency",
+    "compressor_current",
+    "compressor_voltage",
+    "indoor_ambient_temperature",
+    "indoor_coil_temperature",
+    "outdoor_coil_temperature",
+    "outdoor_ambient_temperature",
+    "discharge_pipe_temperature",
+    "indoor_fan_speed",
+    "target_indoor_fan_speed",
+    "water_pump_running",
+    "outdoor_fan_speed",
+    "compressor_power",
+    "fresh_air_exhaust_power",
+    "fresh_air_exhaust_speed",
+    "fresh_air_exhaust_mode",
+}
+
+
 SETTABLE_HINTS: dict[int, set[str]] = {
     0xDC: {"power", "start", "ai_switch"},  # 干衣机
     0xDA: {"power", "start"},
@@ -32,6 +101,7 @@ SETTABLE_HINTS: dict[int, set[str]] = {
     0xB6: {"power", "mode", "fan_speed", "light"},  # 抽油烟机
     0xE3: {"power", "target_temperature"},  # 燃气热水器
     0xE2: {"power", "target_temperature"},
+    0xAC: AC_SETTABLE,  # 壁挂空调
     0xA1: {"fan_speed", "mode", "prompt_tone", "water_level_set"},
     0xC2: {"power"},
     0xCE: {"mode"},
@@ -40,9 +110,22 @@ SETTABLE_HINTS: dict[int, set[str]] = {
 }
 
 
+
 class LoginRequest(BaseModel):
     account: str
     password: str
+
+
+
+def _functions_for_type(model_type: int | None) -> list[str]:
+    if model_type is None:
+        return []
+    try:
+        from . import lua as lua_mod
+
+        return lua_mod.load_for_type(model_type).get("fields") or []
+    except Exception:  # noqa: BLE001
+        return []
 
 
 class ControlRequest(BaseModel):
@@ -121,6 +204,14 @@ def lan_cached_devices() -> dict[str, Any]:
             )
         except (TypeError, ValueError):
             type_hex = str(raw_type)
+        functions: list[str] = []
+        try:
+            raw_type_int = int(str(raw_type), 16) if isinstance(raw_type, str) else int(raw_type)
+            from . import lua as lua_mod
+
+            functions = (lua_mod.load_for_type(raw_type_int).get("fields") or [])
+        except (TypeError, ValueError):
+            pass
         devices.append(
             {
                 "device_id": device_id,
@@ -130,6 +221,8 @@ def lan_cached_devices() -> dict[str, Any]:
                 "model": entry.get("model"),
                 "methods": sorted((entry.get("keys") or {}).keys()),
                 "has_keys": bool(entry.get("keys")),
+                "function_count": len(functions),
+                "functions": functions,
             }
         )
     devices.sort(key=lambda d: (d["type"], str(d["name"])))
@@ -184,18 +277,28 @@ async def lan_discover(cidr: str | None = None) -> dict[str, Any]:
     for device_id, info in found.items():
         sn = str(info.get("sn") or "")
         cached_id, entry = by_sn.get(sn, (None, None))
+        dev_type = int(info.get("type") or 0)
+        functions: list[str] = []
+        try:
+            from . import lua as lua_mod
+
+            functions = (lua_mod.load_for_type(dev_type).get("fields") or [])
+        except Exception:  # noqa: BLE001
+            pass
         devices.append(
             {
                 "device_id": device_id,
                 "name": (entry or {}).get("name"),
                 "cloud_id": cached_id,
-                "type": f"0x{int(info.get('type') or 0):02X}",
+                "type": f"0x{dev_type:02X}",
                 "ip": info.get("ip_address"),
                 "port": info.get("port"),
                 "protocol": info.get("protocol"),
                 "sn": sn,
                 "model": info.get("model"),
                 "has_keys": cached_id is not None,
+                "function_count": len(functions),
+                "functions": functions,
             }
         )
     return {
@@ -236,6 +339,8 @@ async def device_status(device_id: str) -> dict[str, Any]:
             "class": type(device).__name__,
             "type": f"0x{(model_type or 0):02X}",
             "available": getattr(device, "available", None),
+            # 该机型 lua 里的功能字段清单（发现即可列出）
+            "functions": _functions_for_type(model_type),
             # 定位方式与耗时：cached=直连缓存地址（快），sweep=扫描后发现（Tailscale 下很慢）
             "source": getattr(device, "_meiju_source", None),
             "elapsed_ms": getattr(device, "_meiju_elapsed_ms", None),
