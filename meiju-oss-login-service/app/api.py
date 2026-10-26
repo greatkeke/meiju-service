@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +28,35 @@ from .providers.local import local_provider
 from .providers.midea import GatewayError, MideaProvider
 from .store import store
 
-app = FastAPI(title="Meiju OSS Login Service", version="0.1.0")
+# ------------------------------------------------------------------ LAN 预热
+async def _lan_warm_job() -> None:
+    """后台扫一次网段，填充设备地址缓存（不阻塞启动）。"""
+    import asyncio
+
+    await asyncio.sleep(2.0)
+    try:
+        from .lan.service import discover_all, save_endpoints
+        from .lan.subnets import resolve_cidrs
+
+        print(f"[lan] 启动预热，扫描网段: {', '.join(resolve_cidrs())}")
+        found = await discover_all()
+        save_endpoints(found)
+        print(f"[lan] 预热完成，发现 {len(found)} 台设备")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[lan] 预热失败（忽略）: {type(exc).__name__}: {exc}")
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    task = None
+    if os.environ.get("MEIJU_LAN_AUTOSCAN", "1") != "0":
+        task = asyncio.create_task(_lan_warm_job())
+    yield
+    if task is not None:
+        task.cancel()
+
+
+app = FastAPI(title="Meiju OSS Login Service", version="0.1.0", lifespan=_lifespan)
 
 # 默认放行任意来源（本地演示用，鉴权靠 Bearer 头而非 Cookie）。
 # 需要收紧时设置环境变量 CORS_ORIGINS="http://a,http://b"。

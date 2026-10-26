@@ -209,12 +209,24 @@ async def discover_all(
     if found:
         return found
 
-    sweep_cidr = cidr or os.environ.get("MEIJU_LAN_CIDR") or "10.0.0.0/24"
-    print(f"[discover] 广播无结果，改为单播扫描 {sweep_cidr}")
-    try:
-        found = await sweep_cidr_hosts(sweep_cidr)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[discover] 单播扫描失败: {type(exc).__name__}: {exc}")
+    # 广播不通（如 Tailscale）：按探测到的网段逐个单播扫描
+    from .subnets import resolve_cidrs
+
+    cidrs = resolve_cidrs(cidr)
+    if not cidrs:
+        print("[discover] 没有可扫描的网段；请设置 MEIJU_LAN_CIDR")
+        return found
+
+    print(f"[discover] 广播无结果，改为单播扫描: {', '.join(cidrs)}")
+    for target_cidr in cidrs:
+        try:
+            part = await sweep_cidr_hosts(target_cidr)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[discover] 扫描 {target_cidr} 失败: {type(exc).__name__}: {exc}")
+            continue
+        if part:
+            found.update(part)
+            break  # 找到一个网段有设备就够，不必再扫其它
     return found
 
 

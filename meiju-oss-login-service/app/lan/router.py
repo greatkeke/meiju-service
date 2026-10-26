@@ -136,6 +136,42 @@ def lan_cached_devices() -> dict[str, Any]:
     return {"count": len(devices), "devices": devices}
 
 
+@router.get("/lan/subnets")
+def lan_subnets() -> dict[str, Any]:
+    """本次会扫描哪些网段，以及它们是怎么推断出来的。"""
+    import os
+
+    from .subnets import detect_cidrs, resolve_cidrs
+
+    return {
+        "scan": resolve_cidrs(),
+        "detected": detect_cidrs(),
+        "env_override": os.environ.get("MEIJU_LAN_CIDR"),
+        "note": "MEIJU_LAN_CIDR 优先级最高；否则按 缓存设备网段 → 本机网卡 → 路由表 推断",
+    }
+
+
+@router.post("/lan/warmup")
+async def lan_warmup(cidr: str | None = None) -> dict[str, Any]:
+    """手动触发发现并刷新地址缓存（服务启动时也会自动跑一次）。"""
+    from .service import save_endpoints
+
+    found = await discover_all(cidr=cidr)
+    save_endpoints(found)
+    return {
+        "count": len(found),
+        "devices": [
+            {
+                "device_id": did,
+                "sn": info.get("sn"),
+                "ip": info.get("ip_address"),
+                "type": f"0x{int(info.get('type') or 0):02X}",
+            }
+            for did, info in found.items()
+        ],
+    }
+
+
 @router.get("/lan/discover")
 async def lan_discover(cidr: str | None = None) -> dict[str, Any]:
     found = await discover_all(cidr=cidr)
