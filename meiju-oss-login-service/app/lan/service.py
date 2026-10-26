@@ -136,8 +136,15 @@ def load_keys() -> dict[str, dict[str, Any]]:
 
 # ---------------------------------------------------------------- cloud: token/key
 async def fetch_all_keys(account: str, password: str) -> dict[str, Any]:
-    """用账号密码登录云端，取每台设备的 token/key 并缓存。密码不落盘。"""
-    devices: dict[str, Any] = {}
+    """用账号密码登录云端，取每台设备的 token/key 并缓存。密码不落盘。
+
+    单台设备取密钥失败（如已不在家庭、云端 1213）不影响其它设备；
+    旧的可用密钥保留，只更新/新增成功的部分。
+    """
+    old_cache = load_cache()
+    devices: dict[str, Any] = dict(old_cache.get("devices") or {})
+    problems: list[str] = []
+    seen: set[str] = set()
     async with ClientSession() as session:
         cloud = MeijuCloud(
             cloud_name="美的美居", session=session, account=account, password=password
@@ -149,7 +156,12 @@ async def fetch_all_keys(account: str, password: str) -> dict[str, Any]:
         for home_id in homes:
             appliances = await cloud.list_appliances(str(home_id)) or {}
             for appliance_id, info in appliances.items():
-                keys = await cloud.get_cloud_keys(appliance_id)
+                seen.add(str(appliance_id))
+                try:
+                    keys = await cloud.get_cloud_keys(appliance_id)
+                except Exception as exc:  # noqa: BLE001 - 单台失败不阻塞
+                    problems.append(f"{info.get('name')} ({appliance_id}): {type(exc).__name__}: {exc}")
+                    continue
                 if not keys:
                     continue
                 devices[str(appliance_id)] = {
@@ -162,9 +174,16 @@ async def fetch_all_keys(account: str, password: str) -> dict[str, Any]:
                         for method, kv in keys.items()
                     },
                 }
-    save_cache(devices, account)
-    print(f"已缓存 {len(devices)} 台设备的密钥")
-    return load_cache()
+        # 云明确说不在家庭（1213 等）的设备：从缓存移除
+        for appliance_id in list(devices):
+            if appliance_id in seen:
+                continue
+            if any(f"({appliance_id})" in p for p in problems):
+                devices.pop(appliance_id, None)
+    cache = save_cache(devices, account)
+    cache["problems"] = problems
+    print(f"已缓存 {len(devices)} 台设备的密钥；{len(problems)} 台取密钥失败")
+    return cache
 
 
 # ---------------------------------------------------------------- LAN
@@ -454,10 +473,12 @@ async def _open_with_keys(
     try:
         device = await _connect_with(entry, info, device_id)
     except RuntimeError as exc:
-        mark_cache_invalid("所有密钥候选都认证失败（密钥可能已轮换）")
+        # 注意：单台设备连不上 ≠ 整个密钥缓存失效（多半是设备离线/断电）。
+        # 不能在这里 mark_cache_invalid，否则一台离线设备会让所有设备都要求重新登录。
         raise SystemExit(
             f"无法与设备建立会话（{exc}）。\n"
-            "请在页面重新登录以刷新密钥（或设置 MEIJU_ACCOUNT/MEIJU_PASSWORD 后运行 keys）。"
+            "先确认设备在线、和本机同网段；若其它设备正常而只有这台失败，"
+            "可能只是这台设备的密钥已轮换，可在页面重新登录刷新。"
         ) from exc
 
     device._meiju_source = "sweep"  # noqa: SLF001

@@ -163,6 +163,7 @@ async def keys_login(payload: LoginRequest) -> dict[str, Any]:
         "account": cache.get("account"),
         "fetched_at": cache.get("fetched_at"),
         "count": len(cache.get("devices") or {}),
+        "problems": cache.get("problems") or [],
     }
 
 
