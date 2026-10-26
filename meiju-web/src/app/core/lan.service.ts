@@ -32,6 +32,10 @@ export interface LanStatus {
   class?: string;
   type?: string;
   available?: boolean | null;
+  /** 定位方式：cached=直连缓存地址（快），sweep=扫描后发现（Tailscale 下很慢） */
+  source?: 'cached' | 'sweep' | null;
+  /** 服务端定位耗时（毫秒） */
+  elapsed_ms?: number | null;
   /** 该机型可下发的属性；null 表示未收录（可能全部可下发，也可能只读） */
   settable?: string[] | null;
   attributes?: Record<string, unknown>;

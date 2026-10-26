@@ -191,6 +191,9 @@ async def device_status(device_id: str) -> dict[str, Any]:
             "class": type(device).__name__,
             "type": f"0x{(model_type or 0):02X}",
             "available": getattr(device, "available", None),
+            # 定位方式与耗时：cached=直连缓存地址（快），sweep=扫描后发现（Tailscale 下很慢）
+            "source": getattr(device, "_meiju_source", None),
+            "elapsed_ms": getattr(device, "_meiju_elapsed_ms", None),
             # 该机型可下发的属性；None 表示未收录，前端应展示全部属性但提示可能只读
             "settable": sorted(hints) if hints else None,
             "attributes": {
@@ -306,6 +309,8 @@ async def device_control(device_id: str, payload: ControlRequest) -> dict[str, A
             "sent": value,
             "after": after,
             "confirmed": True,
+            "source": getattr(device, "_meiju_source", None),
+            "elapsed_ms": getattr(device, "_meiju_elapsed_ms", None),
         }
     finally:
         await device.close()

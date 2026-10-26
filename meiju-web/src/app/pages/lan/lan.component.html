@@ -88,6 +88,11 @@
         <p class="hint">
           类：{{ st.class || '—' }} · available：
           {{ st.available === null || st.available === undefined ? '—' : st.available }}
+          @if (st.elapsed_ms !== null && st.elapsed_ms !== undefined) {
+            · 定位
+            {{ st.source === 'cached' ? '直连缓存地址' : '扫描发现' }}
+            {{ st.elapsed_ms }}ms
+          }
         </p>
         @if (attributes().length) {
           <table class="attrs">

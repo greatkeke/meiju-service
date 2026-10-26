@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -302,31 +303,43 @@ def _device_from(device_id: int, info: dict[str, Any], entry: dict[str, Any], me
     return device
 
 
-async def _open_with_keys(
-    device_id: int | str,
-    extra_target: str | None = None,
-    method: str = "1",
-):
-    """按「云端设备码或 SN」定位一台局域网设备并连接。
+ENDPOINTS_CACHE = VAR_DIR / "lan_endpoints.json"
+_ENDPOINT_FIELDS = ("ip_address", "port", "protocol", "type", "sn", "model", "mac")
 
-    注意：局域网发现返回的 `device_id` 是设备自身 id，**不保证等于云端
-    applianceCode**，所以这里用 SN 做兜底匹配——云端 SN 已由 midea-local 解密成
-    真实序列号，与局域网广播里的 SN 一致。
-    """
-    cache = load_keys()
+
+def load_endpoints() -> dict[str, dict[str, Any]]:
+    """上次成功发现的设备地址，用于免扫描直连（对 Tailscale 场景很关键）。"""
+    if not ENDPOINTS_CACHE.exists():
+        return {}
+    try:
+        data = json.loads(ENDPOINTS_CACHE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_endpoints(found: dict[int, dict[str, Any]]) -> None:
+    if not found:
+        return
+    data = load_endpoints()
+    for device_id, info in found.items():
+        data[str(device_id)] = {k: info.get(k) for k in _ENDPOINT_FIELDS}
+    try:
+        ENDPOINTS_CACHE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _match_info(
+    device_id: int | str,
+    found: dict[int, dict[str, Any]],
+    cache: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str]:
+    """在发现结果里定位设备：先按 id，再按云端 SN，最后反查 SN。"""
     key = str(device_id)
     entry = cache.get(key)
-
-    found = await discover_all(extra_target)
-    if not found:
-        raise SystemExit(
-            "局域网内没发现任何设备：本机与设备不在同一网段，或设备全部离线。"
-        )
-
-    # 1) id 直接命中
-    info = found.get(int(device_id)) if str(device_id).isdigit() else None
+    info = found.get(int(device_id)) if key.isdigit() else None
     if info is None and entry is not None:
-        # 2) 用云端 SN 匹配局域网 SN
         target_sn = str(entry.get("sn") or "")
         if target_sn:
             for candidate in found.values():
@@ -334,36 +347,18 @@ async def _open_with_keys(
                     info = candidate
                     break
     if info is None:
-        # 3) 反查：局域网 SN 是否对应某条缓存记录
-        for candidate_id, candidate in found.items():
+        for candidate in found.values():
             sn = str(candidate.get("sn") or "")
+            if not sn:
+                continue
             for cached_id, cached in cache.items():
-                if sn and str(cached.get("sn") or "") == sn:
-                    entry = cached
-                    key = cached_id
-                    info = candidate
-                    break
-            if info is not None:
-                break
+                if str(cached.get("sn") or "") == sn:
+                    return candidate, cached, cached_id
+    return info, entry, key
 
-    if info is None:
-        lines = [
-            f"局域网内没发现 device_id={device_id}。",
-            "",
-            f"本次扫描到 {len(found)} 台：",
-        ]
-        for did, dev in found.items():
-            lines.append(f"  id={did}  sn={dev.get('sn')}  type=0x{int(dev.get('type') or 0):02X}  ip={dev.get('ip_address')}")
-        if entry:
-            lines.append("")
-            lines.append(f"该设备在云端的 SN 是 {entry.get('sn')}，不在上面的列表里。")
-            lines.append("常见原因：这台设备不走 Wi-Fi（BLE 网关机型），或当前不在线。")
-        raise SystemExit("\n".join(lines))
 
-    if entry is None:
-        raise SystemExit(f"id={device_id} 没有缓存密钥，先执行: python lan_service.py keys")
-
-    # 每台设备云端会下发多套密钥（method 1/2），逐套尝试直到握手成功。
+async def _connect_with(entry: dict[str, Any], info: dict[str, Any], device_id: int | str):
+    """用一台设备的全部密钥候选尝试握手，返回可用 device。"""
     methods = sorted((entry.get("keys") or {}).keys()) or ["1"]
     errors: list[str] = []
     for candidate_method in methods:
@@ -380,8 +375,8 @@ async def _open_with_keys(
             if not getattr(device, "available", False):
                 raise RuntimeError("连接未就绪（认证可能失败）")
             await device.refresh_status()
-            await asyncio.sleep(2.0)
-            print(f"[lan] 已连接（使用 method {candidate_method} 的密钥）")
+            await asyncio.sleep(1.0)
+            device._meiju_method = candidate_method  # noqa: SLF001
             return device
         except Exception as exc:  # noqa: BLE001
             errors.append(f"method {candidate_method}: {type(exc).__name__}: {exc}")
@@ -389,15 +384,73 @@ async def _open_with_keys(
                 await device.close()
             except Exception:  # noqa: BLE001
                 pass
+    raise RuntimeError("; ".join(errors) or "所有密钥候选都失败")
 
-    reason = "所有密钥候选都认证失败（密钥可能已轮换）"
-    mark_cache_invalid(reason)
-    raise SystemExit(
-        f"{reason}：\n  "
-        + "\n  ".join(errors)
-        + "\n请在页面重新登录以刷新密钥（或设置 MEIJU_ACCOUNT/MEIJU_PASSWORD 后运行 keys）。"
-    )
 
+async def _open_with_keys(
+    device_id: int | str,
+    extra_target: str | None = None,
+    method: str = "1",
+):
+    """定位并连接一台局域网设备。
+
+    优先使用上次发现的地址直接连接（省掉整段扫描，Tailscale 下能快十几秒），
+    失败后才重新扫描并刷新地址缓存。返回的 device 上带有：
+      _meiju_source      —— cached / sweep
+      _meiju_elapsed_ms  —— 本次定位耗时
+    """
+    started = time.time()
+    cache = load_keys()
+    cached_info = None if extra_target else load_endpoints().get(str(device_id))
+
+    if cached_info:
+        entry = cache.get(str(device_id))
+        if entry is not None:
+            try:
+                device = await _connect_with(entry, cached_info, device_id)
+                device._meiju_source = "cached"  # noqa: SLF001
+                device._meiju_elapsed_ms = int((time.time() - started) * 1000)  # noqa: SLF001
+                return device
+            except Exception:  # noqa: BLE001 - 地址可能已变，回退到扫描
+                pass
+
+    found = await discover_all(extra_target)
+    save_endpoints(found)
+    if not found:
+        raise SystemExit("局域网内没发现任何设备：本机与设备不在同一网段，或设备全部离线。")
+
+    info, entry, _key = _match_info(device_id, found, cache)
+    if info is None:
+        lines = [
+            f"局域网内没发现 device_id={device_id}。",
+            "",
+            f"本次扫描到 {len(found)} 台：",
+        ]
+        for did, dev in found.items():
+            lines.append(
+                f"  id={did}  sn={dev.get('sn')}  type=0x{int(dev.get('type') or 0):02X}  ip={dev.get('ip_address')}"
+            )
+        if entry:
+            lines.append("")
+            lines.append(f"该设备在云端的 SN 是 {entry.get('sn')}，不在上面的列表里。")
+            lines.append("常见原因：这台设备不走 Wi-Fi（BLE 网关机型），或当前不在线。")
+        raise SystemExit("\n".join(lines))
+
+    if entry is None:
+        raise SystemExit(f"id={device_id} 没有缓存密钥，请在页面重新登录以获取密钥")
+
+    try:
+        device = await _connect_with(entry, info, device_id)
+    except RuntimeError as exc:
+        mark_cache_invalid("所有密钥候选都认证失败（密钥可能已轮换）")
+        raise SystemExit(
+            f"无法与设备建立会话（{exc}）。\n"
+            "请在页面重新登录以刷新密钥（或设置 MEIJU_ACCOUNT/MEIJU_PASSWORD 后运行 keys）。"
+        ) from exc
+
+    device._meiju_source = "sweep"  # noqa: SLF001
+    device._meiju_elapsed_ms = int((time.time() - started) * 1000)  # noqa: SLF001
+    return device
 
 async def cmd_status(device_id: int, extra_target: str | None) -> None:
     device = await _open_with_keys(device_id, extra_target)
