@@ -222,6 +222,15 @@ async def device_status(device_id: str) -> dict[str, Any]:
     try:
         model_type = getattr(device, "_meiju_type", None)
         hints = SETTABLE_HINTS.get(model_type or -1)
+        dc_extra: dict[str, Any] = {}
+        if model_type == 0xDC:
+            from . import dc as dc_mod
+
+            dc_mod.install_capture()
+            raw = dc_mod.latest_status_body()
+            if raw:
+                dc_extra = dc_mod.decode_status(raw)
+            hints = set(dc_mod.CONTROL_SPEC)  # 干衣机：以 lua 控制表为准
         return {
             "device_id": device_id,
             "class": type(device).__name__,
@@ -233,12 +242,91 @@ async def device_status(device_id: str) -> dict[str, Any]:
             # 该机型可下发的属性；None 表示未收录，前端应展示全部属性但提示可能只读
             "settable": sorted(hints) if hints else None,
             "attributes": {
-                name: device.get_attribute(name)
-                for name in sorted(getattr(device, "attributes", {}) or {})
+                **{
+                    name: device.get_attribute(name)
+                    for name in sorted(getattr(device, "attributes", {}) or {})
+                },
+                **dc_extra,
             },
         }
     finally:
         await device.close()
+
+
+def _norm(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(int(value))
+    return str(value).strip().lower()
+
+
+async def _control_dc(device: Any, device_id: str, payload: ControlRequest) -> dict[str, Any]:
+    """干衣机：按 lua 控制表拼控制体下发，并用状态回报读回确认。"""
+    import asyncio
+
+    from . import dc as dc_mod
+
+    dc_mod.install_capture()
+    name = dc_mod.normalize_field(payload.attribute)
+    if name not in dc_mod.CONTROL_SPEC:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"干衣机没有可下发字段 `{payload.attribute}`。可用："
+                f"{', '.join(sorted(dc_mod.CONTROL_SPEC))}"
+            ),
+        )
+
+    raw_before = dc_mod.latest_status_body()
+    before = (dc_mod.decode_status(raw_before) if raw_before else {}).get(name)
+
+    try:
+        body = dc_mod.send_control(device, {name: payload.value})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"下发失败：{exc}") from exc
+
+    await asyncio.sleep(2.0)
+    await device.refresh_status()
+    await asyncio.sleep(1.5)
+    raw_after = dc_mod.latest_status_body()
+    after = (dc_mod.decode_status(raw_after) if raw_after else {}).get(name)
+    verifiable = name in dc_mod.STATUS_SPEC
+    result: dict[str, Any] = {
+        "device_id": device_id,
+        "attribute": name,
+        "before": before,
+        "sent": payload.value,
+        "control_body": body.hex(),
+        "source": getattr(device, "_meiju_source", None),
+        "elapsed_ms": getattr(device, "_meiju_elapsed_ms", None),
+    }
+    if not verifiable:
+        result.update(verified=False, note="该字段不在状态回报中，无法读回确认（设备已收到指令）")
+        return result
+    expected = payload.value
+    if name == "program" and not isinstance(expected, str):
+        expected = dc_mod.PROGRAM_NAMES.get(int(expected), int(expected))
+    if _norm(after) != _norm(expected):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"指令已发送，但设备未确认变更（{name}: {before!r} -> {after!r}）。"
+                f"本次控制体：{body.hex()}。可能当前状态不允许该操作，或设备未在线。"
+            ),
+        )
+    result.update(after=after, confirmed=True)
+    return result
+
+
+    try:
+        device = await _open_with_keys(device_id, None)
+    except SystemExit as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/lan/devices/{device_id}/control")
@@ -260,6 +348,12 @@ async def device_control(device_id: str, payload: ControlRequest) -> dict[str, A
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if getattr(device, "_meiju_type", None) == 0xDC:
+        try:
+            return await _control_dc(device, device_id, payload)
+        finally:
+            await device.close()
 
     try:
         attr = payload.attribute.strip()

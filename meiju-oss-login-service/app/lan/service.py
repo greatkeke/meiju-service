@@ -559,3 +559,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# 安装干衣机状态体抓取（控制后读回确认需要原始字节）
+from . import dc as _dc  # noqa: E402,F401
